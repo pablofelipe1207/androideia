@@ -186,8 +186,25 @@ approval: ask  # or "auto" for automatic approval
 
 - Go 1.22+ (for building from source)
 - Ollama running locally (for AI agent)
-- Android SDK (for emulator operations)
+- Android SDK (for emulator operations) - automatically detected or installed
 - No runtime dependencies (single binary)
+
+### Android SDK Setup
+
+The installer automatically detects Android SDK in common locations:
+- `~/Android/Sdk`
+- `/usr/lib/android-sdk`
+- `/opt/android-sdk`
+- `$ANDROID_HOME`
+
+If not found, you can install it:
+```bash
+# Install Android SDK tools
+./install.sh sdk
+
+# Or install everything
+./install.sh install
+```
 
 ## License
 
