@@ -1,0 +1,81 @@
+project_name: androideai
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: androideai
+    binary: androideai
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.buildTime={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README*
+      - LICENSE*
+      - install.sh
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: androideai
+    repository:
+      owner: mobiai
+      name: homebrew-tap
+    homepage: https://github.com/mobiai/androideai-core
+    description: "Offline-first AI agent for Android development"
+    license: "MIT"
+    install: |
+      bin.install "androideai"
+    test: |
+      system "#{bin}/androideai", "--help"
+
+scoop:
+  name: androideai
+  homepage: https://github.com/mobiai/androideai-core
+  description: "Offline-first AI agent for Android development"
+  license: MIT
+  install:
+    - bin: androideai.exe
+
+release:
+  github:
+    owner: mobiai
+    name: androideai-core
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"

@@ -1,0 +1,6 @@
+# Test data gitignore
+*.class
+*.jar
+*.war
+*.ear
+*.log

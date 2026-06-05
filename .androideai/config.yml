@@ -1,0 +1,4 @@
+model: qwen3-coder-64k-32k:latest
+ollama_url: http://localhost:11434
+provider: ollama
+approval: ask
