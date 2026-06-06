@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestNormalizeMessagesForOllama_StringArgumentsBecomeObject(t *testing.T) {
@@ -199,4 +200,34 @@ func contains(haystack, needle []byte) bool {
 		}
 	}
 	return false
+}
+
+func TestNewOllamaProviderWithTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{"positive timeout", 5 * time.Minute, 5 * time.Minute},
+		{"zero uses default", 0, 120 * time.Second},
+		{"negative uses default", -1 * time.Second, 120 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewOllamaProviderWithTimeout("http://x", "m", tc.timeout)
+			if p == nil {
+				t.Fatal("provider is nil")
+			}
+			if p.httpClient.Timeout != tc.want {
+				t.Errorf("timeout = %s, want %s", p.httpClient.Timeout, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewOllamaProvider_DefaultTimeout(t *testing.T) {
+	p := NewOllamaProvider("http://x", "m")
+	if p.httpClient.Timeout != 120*time.Second {
+		t.Errorf("expected default 120s, got %s", p.httpClient.Timeout)
+	}
 }

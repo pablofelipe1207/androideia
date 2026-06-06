@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Model      string `yaml:"model"`
-	OllamaURL  string `yaml:"ollama_url"`
-	Provider   string `yaml:"provider"`
-	Approval   string `yaml:"approval"`
-	GlobalPath string `yaml:"-"`
+	Model       string `yaml:"model"`
+	OllamaURL   string `yaml:"ollama_url"`
+	Provider    string `yaml:"provider"`
+	Approval    string `yaml:"approval"`
+	Timeout     int    `yaml:"timeout"` // seconds; 0 means use default
+	GlobalPath  string `yaml:"-"`
 	ProjectPath string `yaml:"-"`
 }
 
@@ -23,7 +24,16 @@ func DefaultConfig() *Config {
 		OllamaURL: "http://localhost:11434",
 		Provider:  "ollama",
 		Approval:  "ask",
+		Timeout:   300, // 5 minutes per LLM call
 	}
+}
+
+// EffectiveTimeout returns the configured timeout or the default if not set.
+func (c *Config) EffectiveTimeout() int {
+	if c.Timeout <= 0 {
+		return 300
+	}
+	return c.Timeout
 }
 
 func LoadConfig() (*Config, error) {

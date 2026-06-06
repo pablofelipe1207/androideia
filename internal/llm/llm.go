@@ -60,11 +60,21 @@ type OllamaProvider struct {
 }
 
 func NewOllamaProvider(baseURL, model string) *OllamaProvider {
+	return NewOllamaProviderWithTimeout(baseURL, model, 120*time.Second)
+}
+
+// NewOllamaProviderWithTimeout crea un provider con un timeout
+// personalizado por petición. Útil para modelos lentos (7B+ en CPU) o
+// contextos largos.
+func NewOllamaProviderWithTimeout(baseURL, model string, timeout time.Duration) *OllamaProvider {
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
 	return &OllamaProvider{
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }

@@ -305,6 +305,7 @@ model: qwen3-coder-64k-32k:latest
 ollama_url: http://localhost:11434
 provider: ollama   # ollama | anthropic | openai
 approval: ask      # ask | auto | never
+timeout: 300       # seconds per LLM call; raise this for slow models / long contexts
 ```
 
 ### Managing config with the CLI
@@ -321,6 +322,7 @@ androideai config set model qwen2.5-coder:7b
 androideai config set ollama_url http://remote:11434
 androideai config set provider ollama
 androideai config set approval auto
+androideai config set timeout 900   # 15 minutes per LLM call
 
 # Set a value in the global config (applies to every project)
 androideai config set model llama3.2:3b --global
@@ -342,6 +344,24 @@ androideai agent "explain this code" -m llama3.2:3b
 
 This also works with `semantic index` / `semantic search` via the same
 `ResolveOllamaModel` flow.
+
+### Override the timeout for a single run
+
+Local 7B+ models on CPU can take several minutes to produce a long plan
+or to summarize a large conversation. The `agent` command accepts
+`--timeout` (in seconds) to override the value from config:
+
+```bash
+androideai agent "explain src/agent/loop.go" --timeout 600   # 10 min
+```
+
+If a request does exceed the timeout, the session is saved as
+`interrupted` and the next run prints a hint with the resume command —
+nothing is lost.
+
+While a request is in flight, the agent prints a `... still thinking
+(turn N, elapsed: 1m30s) ...` line every 30 seconds so you can tell
+that the LLM is still working, not stalled.
 
 ### Auto-selection when Ollama has a single model
 

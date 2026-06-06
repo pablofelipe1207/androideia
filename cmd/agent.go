@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pablofelipe1207/androideia/internal/agent"
 	"github.com/pablofelipe1207/androideia/internal/config"
@@ -17,6 +18,7 @@ var (
 	agentModel    string
 	agentResumeID int64
 	agentSession  string
+	agentTimeout  int
 )
 
 var agentCmd = &cobra.Command{
@@ -70,11 +72,19 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 		}
 		defer s.Close()
 
+		// Resolver timeout: flag > config > default (300s).
+		timeoutSecs := cfg.EffectiveTimeout()
+		if agentTimeout > 0 {
+			timeoutSecs = agentTimeout
+		}
+		timeoutDur := time.Duration(timeoutSecs) * time.Second
+		fmt.Printf("LLM timeout: %s\n", timeoutDur)
+
 		// Create LLM provider
 		var llmProvider llm.Provider
 		switch cfg.Provider {
 		case "ollama":
-			llmProvider = llm.NewOllamaProvider(cfg.OllamaURL, cfg.Model)
+			llmProvider = llm.NewOllamaProviderWithTimeout(cfg.OllamaURL, cfg.Model, timeoutDur)
 		case "anthropic":
 			apiKey := os.Getenv("ANTHROPIC_API_KEY")
 			llmProvider = llm.NewAnthropicProvider(apiKey, cfg.Model)
@@ -135,4 +145,5 @@ func init() {
 	agentCmd.Flags().StringVarP(&agentModel, "model", "m", "", "Override del modelo LLM para esta ejecución (ej: qwen3-coder-64k-32k:latest)")
 	agentCmd.Flags().Int64Var(&agentResumeID, "resume", 0, "Reanuda una conversación persistida por ID")
 	agentCmd.Flags().StringVar(&agentSession, "session", "", "Nombre opcional para la sesión (sólo metadata)")
+	agentCmd.Flags().IntVar(&agentTimeout, "timeout", 0, "Timeout por llamada al LLM en segundos (default: config o 300). Súbelo si tu modelo es lento o el contexto es largo.")
 }

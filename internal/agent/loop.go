@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pablofelipe1207/androideia/internal/brain"
 	"github.com/pablofelipe1207/androideia/internal/config"
@@ -156,11 +157,31 @@ func (a *Agent) Run(task string) error {
 	for turn := 0; turn < maxTurns; turn++ {
 		fmt.Println("Thinking...")
 
+		// Progress indicator: imprime el elapsed time cada 30s para
+		// que el usuario sepa que el LLM sigue trabajando (los modelos
+		// 7B+ en CPU pueden tardar minutos en generar planes largos).
+		progressDone := make(chan struct{})
+		go func(start time.Time, turn int) {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-progressDone:
+					return
+				case <-ticker.C:
+					fmt.Printf("... still thinking (turn %d, elapsed: %s) ...\n",
+						turn+1, time.Since(start).Round(time.Second))
+				}
+			}
+		}(time.Now(), turn)
+
 		// Call LLM
 		resp, err := a.llm.Chat(a.messages, a.tools.GetTools())
+		close(progressDone)
 		if err != nil {
 			a.markInterrupted()
-			return fmt.Errorf("error calling LLM: %w", err)
+			return fmt.Errorf("error calling LLM: %w\n\nLa sesión quedó guardada como 'interrupted'. Usa 'androideai agent --resume %d' para continuar o 'androideai memory show %d' para revisarla.\nSi el timeout es muy corto, prueba --timeout 600 (10 min) o súbelo en la config con 'androideai config set timeout 900'.",
+				err, a.conversationID, a.conversationID)
 		}
 
 		if len(resp.Choices) == 0 {
