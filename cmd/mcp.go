@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mobiai/androideai-core/internal/mcpclient"
+	"github.com/pablofelipe1207/androideia/internal/mcpclient"
 	"github.com/spf13/cobra"
 )
 

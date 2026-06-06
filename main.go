@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/mobiai/androideai-core/cmd"
+	"github.com/pablofelipe1207/androideia/cmd"
 )
 
 var (

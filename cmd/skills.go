@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mobiai/androideai-core/internal/skills"
+	"github.com/pablofelipe1207/androideia/internal/skills"
 	"github.com/spf13/cobra"
 )
 

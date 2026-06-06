@@ -46,4 +46,6 @@ func init() {
 	rootCmd.AddCommand(skillsCmd)
 	rootCmd.AddCommand(semanticCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(modelsCmd)
 }

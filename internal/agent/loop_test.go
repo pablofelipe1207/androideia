@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mobiai/androideai-core/internal/config"
-	"github.com/mobiai/androideai-core/internal/llm"
+	"github.com/pablofelipe1207/androideia/internal/config"
+	"github.com/pablofelipe1207/androideia/internal/llm"
 )
 
 func TestAgentWithOllama(t *testing.T) {

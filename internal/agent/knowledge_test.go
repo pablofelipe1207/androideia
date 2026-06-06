@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mobiai/androideai-core/internal/brain"
-	"github.com/mobiai/androideai-core/internal/config"
-	"github.com/mobiai/androideai-core/internal/llm"
-	"github.com/mobiai/androideai-core/internal/store"
+	"github.com/pablofelipe1207/androideia/internal/brain"
+	"github.com/pablofelipe1207/androideia/internal/config"
+	"github.com/pablofelipe1207/androideia/internal/llm"
+	"github.com/pablofelipe1207/androideia/internal/store"
 )
 
 func TestSearchRelevantKnowledge(t *testing.T) {

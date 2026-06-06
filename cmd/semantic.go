@@ -5,9 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mobiai/androideai-core/internal/config"
-	"github.com/mobiai/androideai-core/internal/semantic"
-	"github.com/mobiai/androideai-core/internal/store"
+	"github.com/pablofelipe1207/androideia/internal/config"
+	"github.com/pablofelipe1207/androideia/internal/llm"
+	"github.com/pablofelipe1207/androideia/internal/semantic"
+	"github.com/pablofelipe1207/androideia/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -42,13 +43,26 @@ var semanticIndexCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		// Create semantic instance
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
-
 		// Check if Ollama is available
-		if !sem.IsAvailable() {
+		probe := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
+		if !probe.IsAvailable() {
 			return fmt.Errorf("Ollama is not available at %s. Please start Ollama first.", cfg.OllamaURL)
 		}
+
+		// Auto-resolve embedding model from Ollama (single-model shortcut)
+		if cfg.Provider == "ollama" {
+			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+			if err != nil {
+				return fmt.Errorf("error resolving model: %w", err)
+			}
+			if autoSelected {
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+			}
+			cfg.Model = resolved
+		}
+
+		// Create semantic instance with resolved model
+		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
 
 		// Index all symbols
 		count, err := sem.IndexAll()
@@ -89,6 +103,18 @@ var semanticSearchCmd = &cobra.Command{
 			return fmt.Errorf("error opening database: %w", err)
 		}
 		defer s.Close()
+
+		// Auto-resolve embedding model from Ollama (single-model shortcut)
+		if cfg.Provider == "ollama" {
+			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+			if err != nil {
+				return fmt.Errorf("error resolving model: %w", err)
+			}
+			if autoSelected {
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+			}
+			cfg.Model = resolved
+		}
 
 		// Create semantic instance
 		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
@@ -137,6 +163,18 @@ var semanticStatusCmd = &cobra.Command{
 			return fmt.Errorf("error opening database: %w", err)
 		}
 		defer s.Close()
+
+		// Auto-resolve embedding model from Ollama (single-model shortcut)
+		if cfg.Provider == "ollama" {
+			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+			if err != nil {
+				return fmt.Errorf("error resolving model: %w", err)
+			}
+			if autoSelected {
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+			}
+			cfg.Model = resolved
+		}
 
 		// Create semantic instance
 		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)

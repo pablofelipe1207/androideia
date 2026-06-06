@@ -2,9 +2,9 @@
 set -e
 
 # androideai-core installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/mobiai/androideai-core/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/pablofelipe1207/androideia/main/install.sh | bash
 
-REPO="mobiai/androideai-core"
+REPO="pablofelipe1207/androideia"
 BINARY="androideai"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 ANDROID_SDK_DIR="${ANDROID_SDK_DIR:-$HOME/Android/Sdk}"
@@ -319,7 +319,7 @@ install() {
 # Install from source
 install_from_source() {
     echo "Installing from source..."
-    
+
     # Check if Go is installed
     if ! command_exists go; then
         echo "Go is not installed."
@@ -330,24 +330,49 @@ install_from_source() {
         echo "  Arch: sudo pacman -S go"
         exit 1
     fi
-    
+
     echo "Go found: $(go version)"
-    
+
     # Clone and build
     TMP_DIR=$(mktemp -d)
     trap "rm -rf $TMP_DIR" EXIT
-    
+
     echo "Cloning repository..."
     git clone --depth 1 "https://github.com/$REPO.git" "$TMP_DIR"
-    
+
     cd "$TMP_DIR"
-    
+
     echo "Building..."
     CGO_ENABLED=0 go build -tags no_treesitter -ldflags="-s -w" -o "$INSTALL_DIR/$BINARY" .
-    
+
     echo "✅ androideai-core installation complete!"
     echo ""
     echo "Binary installed to: $INSTALL_DIR/$BINARY"
+}
+
+# Create the global config file with defaults so the user can edit the model
+# (and other settings) without re-running the installer.
+install_global_config() {
+    local GLOBAL_DIR="$HOME/.androideai"
+    local GLOBAL_CONFIG="$GLOBAL_DIR/config.yml"
+
+    mkdir -p "$GLOBAL_DIR"
+
+    if [ -f "$GLOBAL_CONFIG" ]; then
+        echo "Global config already exists at: $GLOBAL_CONFIG (skipping)"
+        return
+    fi
+
+    cat > "$GLOBAL_CONFIG" << EOF
+# androideai-core global configuration
+# Edit this file or use: androideai config set <key> <value> --global
+model: qwen3-coder-64k-32k:latest
+ollama_url: http://localhost:11434
+provider: ollama
+approval: ask
+EOF
+
+    echo "Created global config at: $GLOBAL_CONFIG"
 }
 
 # Uninstall
@@ -386,6 +411,11 @@ print_summary() {
     echo "  4. Start the agent:"
     echo "     androideai agent 'Create a login feature'"
     echo ""
+    echo "  5. Change the LLM model (e.g. to use a different Ollama model):"
+    echo "     androideai config set model <model_name> --global"
+    echo "     or override per-run:"
+    echo "     androideai agent 'task' --model <model_name>"
+    echo ""
     echo "=========================================="
 }
 
@@ -395,6 +425,7 @@ main() {
         install)
             detect_platform
             install
+            install_global_config
             check_android_sdk
             print_summary
             ;;
@@ -404,6 +435,7 @@ main() {
         from-source)
             detect_platform
             install_from_source
+            install_global_config
             check_android_sdk
             print_summary
             ;;

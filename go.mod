@@ -1,4 +1,4 @@
-module github.com/mobiai/androideai-core
+module github.com/pablofelipe1207/androideia
 
 go 1.26.3
 

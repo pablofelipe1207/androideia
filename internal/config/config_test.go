@@ -103,3 +103,97 @@ func TestLoadConfigFromProject(t *testing.T) {
 		t.Errorf("Expected model 'project-model', got '%s'", loadedCfg.Model)
 	}
 }
+
+func TestLoadConfigFromFile_Missing(t *testing.T) {
+	tmpFile := filepath.Join(os.TempDir(), "non-existent-config.yml")
+	cfg, err := LoadConfigFromFile(tmpFile)
+	if err != nil {
+		t.Fatalf("Expected no error for missing file, got: %v", err)
+	}
+	if cfg.Model != "qwen3-coder-64k-32k:latest" {
+		t.Errorf("Expected default model, got '%s'", cfg.Model)
+	}
+}
+
+func TestLoadConfigFromFile_Override(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config-loadfile-test")
+	if err != nil {
+		t.Fatalf("Error creating temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := DefaultConfig()
+	cfg.Model = "custom-model"
+	cfg.Approval = "auto"
+	path := filepath.Join(tmpDir, "config.yml")
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Error saving config: %v", err)
+	}
+
+	loaded, err := LoadConfigFromFile(path)
+	if err != nil {
+		t.Fatalf("Error loading config: %v", err)
+	}
+	if loaded.Model != "custom-model" {
+		t.Errorf("Expected model 'custom-model', got '%s'", loaded.Model)
+	}
+	if loaded.Approval != "auto" {
+		t.Errorf("Expected approval 'auto', got '%s'", loaded.Approval)
+	}
+}
+
+func TestLoadConfig_GlobalAndProjectMerge(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "config-home-test")
+	if err != nil {
+		t.Fatalf("Error creating temp home: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+	os.Setenv("HOME", tmpHome)
+	defer os.Unsetenv("HOME")
+
+	tmpDir, err := os.MkdirTemp("", "config-proj-test")
+	if err != nil {
+		t.Fatalf("Error creating temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	originalDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(originalDir)
+
+	// Global config defines model
+	globalDir := filepath.Join(tmpHome, ".androideai")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	globalCfg := DefaultConfig()
+	globalCfg.Model = "global-model"
+	globalCfg.Approval = "auto"
+	globalCfg.Provider = "ollama"
+	if err := globalCfg.Save(filepath.Join(globalDir, "config.yml")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project config overrides model only (write partial YAML manually so
+	// the other fields fall through to the global config)
+	if err := os.MkdirAll(".androideai", 0755); err != nil {
+		t.Fatal(err)
+	}
+	partialYAML := "model: project-model\n"
+	if err := os.WriteFile(filepath.Join(".androideai", "config.yml"), []byte(partialYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Model != "project-model" {
+		t.Errorf("Expected project model 'project-model', got '%s'", loaded.Model)
+	}
+	if loaded.Approval != "auto" {
+		t.Errorf("Expected global approval 'auto', got '%s'", loaded.Approval)
+	}
+	if loaded.Provider != "ollama" {
+		t.Errorf("Expected global provider 'ollama', got '%s'", loaded.Provider)
+	}
+}

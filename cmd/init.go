@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mobiai/androideai-core/internal/config"
-	"github.com/mobiai/androideai-core/internal/store"
+	"github.com/pablofelipe1207/androideia/internal/config"
+	"github.com/pablofelipe1207/androideia/internal/store"
 	"github.com/spf13/cobra"
 )
 

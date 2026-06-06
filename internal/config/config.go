@@ -35,6 +35,7 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("error getting home directory: %w", err)
 	}
 	globalPath := filepath.Join(globalDir, ".androideai", "config.yml")
+	config.GlobalPath = globalPath
 	if _, err := os.Stat(globalPath); err == nil {
 		if err := config.loadFromFile(globalPath); err != nil {
 			return nil, fmt.Errorf("error loading global config: %w", err)
@@ -43,6 +44,7 @@ func LoadConfig() (*Config, error) {
 
 	// Cargar config de proyecto (sobreescribe global)
 	projectPath := filepath.Join(".androideai", "config.yml")
+	config.ProjectPath = projectPath
 	if _, err := os.Stat(projectPath); err == nil {
 		if err := config.loadFromFile(projectPath); err != nil {
 			return nil, fmt.Errorf("error loading project config: %w", err)
@@ -50,6 +52,19 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return config, nil
+}
+
+// LoadConfigFromFile carga defaults + un único archivo de configuración.
+// Si el archivo no existe, retorna los defaults. Útil para editar la
+// configuración global o de proyecto de forma aislada.
+func LoadConfigFromFile(path string) (*Config, error) {
+	cfg := DefaultConfig()
+	if _, err := os.Stat(path); err == nil {
+		if err := cfg.loadFromFile(path); err != nil {
+			return nil, fmt.Errorf("error loading config from %s: %w", path, err)
+		}
+	}
+	return cfg, nil
 }
 
 func (c *Config) loadFromFile(path string) error {

@@ -54,9 +54,9 @@ changelog:
 brews:
   - name: androideai
     repository:
-      owner: mobiai
+      owner: pablofelipe1207
       name: homebrew-tap
-    homepage: https://github.com/mobiai/androideai-core
+    homepage: https://github.com/pablofelipe1207/androideia
     description: "Offline-first AI agent for Android development"
     license: "MIT"
     install: |
@@ -66,7 +66,7 @@ brews:
 
 scoop:
   name: androideai
-  homepage: https://github.com/mobiai/androideai-core
+  homepage: https://github.com/pablofelipe1207/androideia
   description: "Offline-first AI agent for Android development"
   license: MIT
   install:
@@ -74,7 +74,7 @@ scoop:
 
 release:
   github:
-    owner: mobiai
+    owner: pablofelipe1207
     name: androideai-core
   draft: false
   prerelease: auto

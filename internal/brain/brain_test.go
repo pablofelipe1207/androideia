@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mobiai/androideai-core/internal/store"
+	"github.com/pablofelipe1207/androideia/internal/store"
 )
 
 func TestNewBrain(t *testing.T) {

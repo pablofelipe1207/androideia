@@ -7,26 +7,26 @@ Offline-first AI agent for Android development with semantic code exploration, o
 ### Quick Install (Linux/macOS)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mobiai/androideai-core/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pablofelipe1207/androideia/main/install.sh | bash
 ```
 
 ### Using Make
 
 ```bash
-git clone https://github.com/mobiai/androideai-core.git
-cd androideai-core
+git clone https://github.com/pablofelipe1207/androideia.git
+cd androideia
 make install
 ```
 
 ### Using Go
 
 ```bash
-go install github.com/mobiai/androideai-core@latest
+go install github.com/pablofelipe1207/androideia@latest
 ```
 
 ### Manual Download
 
-Download the latest binary from [Releases](https://github.com/mobiai/androideai-core/releases) and add it to your PATH.
+Download the latest binary from [Releases](https://github.com/pablofelipe1207/androideia/releases) and add it to your PATH.
 
 ### Build from Source
 
@@ -80,6 +80,10 @@ androideai agent "Your task here"
 androideai agent "Create a User data class with id, name, email"
 androideai agent "Make my app adaptive for tablets"
 androideai agent "Start the emulator and install my app"
+
+# Override the model for this run (does not change config files)
+androideai agent "Refactor the auth flow" --model qwen2.5-coder:7b
+# or: -m llama3.2:3b
 ```
 
 ## Skills Management
@@ -173,14 +177,88 @@ androideai brain export knowledge.md
 
 ## Configuration
 
-Configuration file: `.androideai/config.yml`
+Two configuration files are merged on every command (project wins over global):
+
+| Scope | Path | Created by |
+|-------|------|------------|
+| Global | `~/.androideai/config.yml` | `install.sh` (during install) |
+| Project | `./.androideai/config.yml` | `androideai init` |
 
 ```yaml
 model: qwen3-coder-64k-32k:latest
 ollama_url: http://localhost:11434
-provider: ollama
-approval: ask  # or "auto" for automatic approval
+provider: ollama   # ollama | anthropic | openai
+approval: ask      # ask | auto | never
 ```
+
+### Managing config with the CLI
+
+```bash
+# Show the effective config (project + global merged)
+androideai config show
+
+# Read a single key
+androideai config get model
+
+# Set a value in the project config
+androideai config set model qwen2.5-coder:7b
+androideai config set ollama_url http://remote:11434
+androideai config set provider ollama
+androideai config set approval auto
+
+# Set a value in the global config (applies to every project)
+androideai config set model llama3.2:3b --global
+# or: -g
+```
+
+You can also edit the YAML files directly — `loadFromFile` reads partial files,
+so you only need to set the keys you want to override.
+
+### Override the model for a single run
+
+The `agent` command accepts `--model` (or `-m`) to override the configured
+model without touching any file:
+
+```bash
+androideai agent "refactor the login flow" --model qwen2.5-coder:7b
+androideai agent "explain this code" -m llama3.2:3b
+```
+
+This also works with `semantic index` / `semantic search` via the same
+`ResolveOllamaModel` flow.
+
+### Auto-selection when Ollama has a single model
+
+Whenever the provider is `ollama`, the agent and semantic commands query
+`GET /api/tags` and apply these rules:
+
+| Ollama state | Behavior |
+|--------------|----------|
+| Exactly 1 model installed | Use it (and notify the user, e.g. `Ollama has a single model installed; using X (config had Y)`) |
+| Configured model is in the list | Use the configured model |
+| Multiple models and configured one is missing | Return an error listing the available models |
+| Ollama is unreachable | Fall back to the configured model; `IsAvailable` will fail later with a clear message |
+| Ollama has no models | Return an error suggesting `ollama pull <modelo>` |
+
+## Models
+
+```bash
+# List the models installed in Ollama, mark the configured one with *,
+# and show which one would be auto-selected
+androideai models list
+```
+
+Example output:
+
+```
+Modelos disponibles en Ollama (http://localhost:11434):
+* qwen2.5-coder:7b
+
+Modelo configurado disponible: qwen2.5-coder:7b
+```
+
+When only one model is installed the configured model is overridden
+automatically (see the table above).
 
 ## Requirements
 

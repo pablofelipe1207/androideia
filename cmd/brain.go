@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mobiai/androideai-core/internal/brain"
-	"github.com/mobiai/androideai-core/internal/store"
+	"github.com/pablofelipe1207/androideia/internal/brain"
+	"github.com/pablofelipe1207/androideia/internal/store"
 	"github.com/spf13/cobra"
 )
 

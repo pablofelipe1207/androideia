@@ -5,11 +5,15 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mobiai/androideai-core/internal/agent"
-	"github.com/mobiai/androideai-core/internal/config"
-	"github.com/mobiai/androideai-core/internal/llm"
-	"github.com/mobiai/androideai-core/internal/store"
+	"github.com/pablofelipe1207/androideia/internal/agent"
+	"github.com/pablofelipe1207/androideia/internal/config"
+	"github.com/pablofelipe1207/androideia/internal/llm"
+	"github.com/pablofelipe1207/androideia/internal/store"
 	"github.com/spf13/cobra"
+)
+
+var (
+	agentModel string
 )
 
 var agentCmd = &cobra.Command{
@@ -25,6 +29,27 @@ var agentCmd = &cobra.Command{
 		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("error loading config: %w", err)
+		}
+
+		// Override model from --model flag if provided
+		if agentModel != "" {
+			cfg.Model = agentModel
+			fmt.Printf("Using model override: %s\n", cfg.Model)
+		}
+
+		// Auto-resolve model from Ollama if provider is ollama.
+		// If Ollama has exactly one model installed, use it (and notify the
+		// user). If the configured model is available, keep it. Otherwise
+		// the helper returns an error listing available models.
+		if cfg.Provider == "ollama" {
+			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+			if err != nil {
+				return fmt.Errorf("error resolving model: %w", err)
+			}
+			if autoSelected {
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+			}
+			cfg.Model = resolved
 		}
 
 		// Open store
@@ -67,4 +92,8 @@ var agentCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func init() {
+	agentCmd.Flags().StringVarP(&agentModel, "model", "m", "", "Override del modelo LLM para esta ejecución (ej: qwen3-coder-64k-32k:latest)")
 }
