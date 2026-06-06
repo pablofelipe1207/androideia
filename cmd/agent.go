@@ -10,6 +10,7 @@ import (
 	"github.com/pablofelipe1207/androideia/internal/config"
 	"github.com/pablofelipe1207/androideia/internal/llm"
 	"github.com/pablofelipe1207/androideia/internal/memory"
+	"github.com/pablofelipe1207/androideia/internal/project"
 	"github.com/pablofelipe1207/androideia/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -102,6 +103,26 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 
 		// Create and run agent
 		ag := agent.NewAgent(llmProvider, s.DB(), cfg)
+
+		// Descubrir metadatos del proyecto Android (applicationId,
+		// namespace, libs.versions.toml) y pasarlos al agente. Si el
+		// directorio actual no es un proyecto Android, se omite en
+		// silencio: el agente seguirá funcionando, sólo perderá las
+		// convenciones de naming.
+		if md, err := project.Discover("."); err == nil && md != nil {
+			ag.SetProjectMetadata(md)
+			fmt.Printf("[Project] applicationId=%s\n", md.ApplicationID)
+			if len(md.ManifestActivities) > 0 {
+				fmt.Printf("[Project] activities=%v\n", md.ManifestActivities)
+			}
+			if md.LibsVersionsPath != "" {
+				fmt.Printf("[Project] libs.versions.toml: %s (%d versions, %d libraries)\n",
+					md.LibsVersionsPath, len(md.LibsVersions), len(md.LibsLibraries))
+			}
+		} else if err != nil {
+			fmt.Printf("[Project] (advertencia) %v\n", err)
+		}
+
 		mem := memory.NewMemory(s.DB())
 		ag.SetMemory(mem)
 

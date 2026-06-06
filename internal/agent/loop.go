@@ -11,6 +11,7 @@ import (
 	"github.com/pablofelipe1207/androideia/internal/config"
 	"github.com/pablofelipe1207/androideia/internal/llm"
 	"github.com/pablofelipe1207/androideia/internal/memory"
+	"github.com/pablofelipe1207/androideia/internal/project"
 )
 
 type Agent struct {
@@ -20,6 +21,7 @@ type Agent struct {
 	config         *config.Config
 	messages       []llm.Message
 	memory         *memory.Memory
+	projectMD      *project.Metadata
 	conversationID int64
 	taskStats      TaskStats
 }
@@ -31,7 +33,9 @@ type TaskStats struct {
 	HasErrors     bool
 }
 
-// NewAgent crea un agente. La memoria persistente se conecta con SetMemory.
+// NewAgent crea un agente. La memoria persistente se conecta con SetMemory
+// y los metadatos del proyecto (AndroidManifest, libs.versions.toml)
+// con SetProjectMetadata.
 func NewAgent(llmProvider llm.Provider, db *sql.DB, cfg *config.Config) *Agent {
 	return &Agent{
 		llm:   llmProvider,
@@ -41,6 +45,29 @@ func NewAgent(llmProvider llm.Provider, db *sql.DB, cfg *config.Config) *Agent {
 		messages: []llm.Message{
 			{Role: "system", Content: SystemPrompt},
 		},
+	}
+}
+
+// SetProjectMetadata inyecta los metadatos del proyecto Android
+// (applicationId real, activities del manifest, versiones/librerías ya
+// declaradas en gradle/libs.versions.toml) en el system prompt, para que
+// el LLM NO invente package names ni coordenadas de Gradle. Es seguro
+// llamar a esta función antes de NewAgent / antes de StartSession.
+func (a *Agent) SetProjectMetadata(md *project.Metadata) {
+	if md == nil {
+		return
+	}
+	a.projectMD = md
+	block := BuildProjectContextBlock(md)
+	if block == "" {
+		return
+	}
+	// Sobrescribimos el system prompt con la versión anotada, pero sólo
+	// si todavía no fue inyectado (idempotente si el llamador lo hace
+	// dos veces).
+	if len(a.messages) > 0 && a.messages[0].Role == "system" &&
+		!strings.Contains(a.messages[0].Content, "## Project context") {
+		a.messages[0].Content = a.messages[0].Content + "\n\n" + block
 	}
 }
 
@@ -65,7 +92,15 @@ func (a *Agent) StartSession(task string) (int64, error) {
 
 	// Persistir el system prompt como primer mensaje de la conversación
 	// para que un resume reconstruya exactamente el mismo contexto.
-	if err := a.memory.AppendMessage(a.conversationID, "system", SystemPrompt, nil, "", ""); err != nil {
+	// Incluimos el bloque "## Project context" si tenemos los metadatos,
+	// para que un resume posterior siga viendo las convenciones.
+	systemContent := SystemPrompt
+	if a.projectMD != nil {
+		if block := BuildProjectContextBlock(a.projectMD); block != "" {
+			systemContent = systemContent + "\n\n" + block
+		}
+	}
+	if err := a.memory.AppendMessage(a.conversationID, "system", systemContent, nil, "", ""); err != nil {
 		return 0, err
 	}
 	return conv.ID, nil
@@ -92,6 +127,16 @@ func (a *Agent) ResumeSession(id int64) (string, error) {
 	a.messages = a.memory.ToLLMMessages(stored)
 	if err := a.memory.SetStatus(id, memory.StatusActive); err != nil {
 		return "", err
+	}
+	// Si la sesión fue creada antes de que existiera la inyección del
+	// bloque "## Project context", lo añadimos ahora para que el LLM
+	// siga las convenciones de package y de libs.versions.toml.
+	if a.projectMD != nil && len(a.messages) > 0 && a.messages[0].Role == "system" &&
+		!strings.Contains(a.messages[0].Content, "## Project context") {
+		block := BuildProjectContextBlock(a.projectMD)
+		if block != "" {
+			a.messages[0].Content = a.messages[0].Content + "\n\n" + block
+		}
 	}
 	return conv.Task, nil
 }

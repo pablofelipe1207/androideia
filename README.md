@@ -111,6 +111,29 @@ When prompted you can answer:
 | `e` | Edit; you are asked for a new plan |
 | any other text | Approve with the text forwarded as feedback |
 
+### Project context (package name & dependency versions)
+
+When you launch the agent inside an Android project, the CLI discovers
+the real `applicationId` / `namespace` and the contents of
+`gradle/libs.versions.toml` automatically and injects them as a
+`## Project context` block at the start of the conversation. The agent
+is required to:
+
+- Use the real applicationId/namespace for every new Kotlin/Java file
+  (so the `package` line and the file path always agree, and the IDE
+  doesn't end up with files under a made-up package like
+  `com.example.yourapp`).
+- Match the package prefix of existing activities (e.g. if
+  `MainActivity` is `com.example.myapplication.MainActivity`, new files
+  go under `com.example.myapplication.<feature>...`).
+- Reuse versions and libraries already declared in
+  `gradle/libs.versions.toml` via `version.ref` / library alias instead
+  of adding duplicate entries.
+
+If the project has no `app/src/main/AndroidManifest.xml` (e.g. library
+modules only) or no `gradle/libs.versions.toml`, the agent will ask
+you via `ask_user` for the applicationId before writing any file.
+
 ## Agent Memory
 
 Every agent run is persisted to `.androideai/core.db` as a `conversation`

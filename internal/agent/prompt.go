@@ -1,5 +1,13 @@
 package agent
 
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/pablofelipe1207/androideia/internal/project"
+)
+
 const SystemPrompt = `You are androideai-core, an expert Android development assistant. You help developers build Android applications by exploring code, planning changes, and implementing features.
 
 ## Your Capabilities
@@ -23,6 +31,52 @@ Follow this cycle for every task:
 5. **VERIFICAR (Verify)**: Run tests and linting to ensure correctness. Use gradle and test tools.
 
 6. **APRENDER (Learn)**: If you discover important patterns or decisions, suggest saving them to the knowledge base using brain_search.
+
+## CRITICAL — Package and naming conventions
+NEVER invent a package name for new files. NEVER copy a package from a
+template, an example, or from memory. The package directory of every new
+Kotlin/Java file MUST be derived from the project's real applicationId
+declared in AndroidManifest.xml (or the AGP 8+ namespace in
+app/build.gradle.kts), under the feature folder the user is working on.
+
+Concretely, before writing ANY new file you MUST:
+
+1. Read the AndroidManifest.xml (or, if it has no package attribute,
+   app/build.gradle.kts → android { namespace = "..." }) to obtain the
+   real applicationId/namespace. The CLI injects this in the
+   "## Project context" block at the start of the conversation; if the
+   block is missing or empty, STOP and ask the user (use ask_user) for
+   the applicationId/namespace before creating files.
+2. Inspect the activities/components declared in the manifest
+   ("## Project context" → "Manifest activities"). Use the SAME package
+   prefix they use. If MainActivity lives at
+   com.example.myapplication.MainActivity, new files for that feature
+   MUST live under com.example.myapplication.<feature>..., NOT under
+   com.example.yourapp, com.example.app, com.example.myapplication2, or
+   any other invented prefix.
+3. Inspect gradle/libs.versions.toml (the CLI also injects it as
+   "## Project context" → "Library versions" and "Libraries already
+   declared"). For every dependency you propose:
+   - If the project already declares a version in [versions], REUSE it
+     by alias (e.g. version.ref = "compose-bom") instead of adding a
+     new version entry.
+   - If the project already declares a library in [libraries] with the
+     same group:artifact, REUSE the alias instead of declaring a
+     duplicate. Do NOT redeclare the same group:artifact under a
+     different alias.
+   - Only add a new version/library when the project does not have it.
+     When you do, follow the existing naming style
+     (kebab-case alias, group:artifact coords).
+4. Never write a package line in a .kt/.java file that does not match
+   the directory path you wrote it to. Gradle/IDE will silently fail
+   to compile if the package declaration and the file path disagree.
+5. If you need to create a NEW subpackage (e.g. a new feature
+   "checkout"), derive it as "<applicationId>.feature.checkout" (or
+   similar) and explain that derivation in the plan.
+
+If the user asks you to create files in a different package on purpose
+(e.g. moving the app to a new namespace), call this out explicitly in
+the plan and ask them to confirm with confirm_plan.
 
 ## Rules
 - NEVER write files without user approval (mode: ask by default)
@@ -115,4 +169,72 @@ func BuildContextPrompt(context map[string]interface{}) string {
 	}
 	
 	return prompt
+}
+
+// BuildProjectContextBlock genera el bloque "## Project context" que el
+// CLI inyecta al principio de la conversación cuando logra descubrir el
+// AndroidManifest y/o libs.versions.toml. Devuelve "" si md es nil o no
+// aporta información útil (así no contaminamos el system prompt con
+// bloques vacíos en proyectos no-Android).
+func BuildProjectContextBlock(md *project.Metadata) string {
+	if md == nil {
+		return ""
+	}
+	var b strings.Builder
+	hasAny := false
+	if md.ApplicationID != "" {
+		hasAny = true
+		fmt.Fprintf(&b, "## Project context\n\n")
+		fmt.Fprintf(&b, "- Application ID / namespace: `%s`\n", md.ApplicationID)
+	}
+	if md.ManifestPath != "" {
+		if !hasAny {
+			fmt.Fprintf(&b, "## Project context\n\n")
+		}
+		hasAny = true
+		fmt.Fprintf(&b, "- AndroidManifest: `%s`\n", md.ManifestPath)
+	}
+	if len(md.ManifestActivities) > 0 {
+		if !hasAny {
+			fmt.Fprintf(&b, "## Project context\n\n")
+			hasAny = true
+		}
+		fmt.Fprintf(&b, "- Manifest activities:\n")
+		for _, a := range md.ManifestActivities {
+			fmt.Fprintf(&b, "  - `%s`\n", a)
+		}
+	}
+	if md.LibsVersionsPath != "" {
+		if !hasAny {
+			fmt.Fprintf(&b, "## Project context\n\n")
+			hasAny = true
+		}
+		fmt.Fprintf(&b, "- gradle/libs.versions.toml: `%s`\n", md.LibsVersionsPath)
+	}
+	if len(md.LibsVersions) > 0 {
+		fmt.Fprintf(&b, "- Library versions declared (reuse these aliases before adding a new one):\n")
+		keys := make([]string, 0, len(md.LibsVersions))
+		for k := range md.LibsVersions {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "  - `%s` = \"%s\"\n", k, md.LibsVersions[k])
+		}
+	}
+	if len(md.LibsLibraries) > 0 {
+		fmt.Fprintf(&b, "- Libraries already declared (do NOT redeclare these with a new alias):\n")
+		keys := make([]string, 0, len(md.LibsLibraries))
+		for k := range md.LibsLibraries {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "  - `%s` = `%s`\n", k, md.LibsLibraries[k])
+		}
+	}
+	if !hasAny {
+		return ""
+	}
+	return b.String()
 }
