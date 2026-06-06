@@ -52,6 +52,10 @@ androideai skills import-android
 
 # Start the agent
 androideai agent "Create a login feature with MVVM architecture"
+
+# Later: list past sessions and resume one of them
+androideai memory list
+androideai agent --resume 1 "now add unit tests for the ViewModel"
 ```
 
 ## Features
@@ -60,7 +64,8 @@ androideai agent "Create a login feature with MVVM architecture"
 - **Code Indexing**: Fast symbol search with tree-sitter parser
 - **Feature Navigation**: Find all layers of a feature (Screen, ViewModel, UseCase, etc.)
 - **Knowledge Base**: Save and search project decisions and patterns
-- **Agent Loop**: AI-guided development with approval gate
+- **Agent Loop**: AI-guided development with approval gate and a dedicated `confirm_plan` tool
+- **Agent Memory**: Every run is persisted; resume with `androideai agent --resume <id>` and inspect with `androideai memory list/show`
 - **Skills System**: Extensible without recompilation
 - **Android Operations**: Gradle, tests, emulator management
 
@@ -84,6 +89,68 @@ androideai agent "Start the emulator and install my app"
 # Override the model for this run (does not change config files)
 androideai agent "Refactor the auth flow" --model qwen2.5-coder:7b
 # or: -m llama3.2:3b
+
+# Resume a previous conversation (see "Agent Memory" below)
+androideai agent --resume 7 "now add the forgot-password screen"
+```
+
+### Confirmations
+
+The agent never writes files or executes destructive actions without your
+approval. The LLM is instructed to call a dedicated `confirm_plan` tool
+instead of asking in plain text; if the model ever forgets, the loop
+detects confirmation phrases ("please confirm", "should I proceed",
+"¿confirmas?", "¿procedo?", …) and re-prompts you before continuing.
+
+When prompted you can answer:
+
+| Input | Effect |
+|-------|--------|
+| `y` / `yes` / `s` / `si` | Approve and continue |
+| `n` / `no` / empty | Reject; session stays open and is marked `interrupted` |
+| `e` | Edit; you are asked for a new plan |
+| any other text | Approve with the text forwarded as feedback |
+
+## Agent Memory
+
+Every agent run is persisted to `.androideai/core.db` as a `conversation`
+with its full message history (system, user, assistant, tool calls and
+tool results). You can inspect past sessions, resume them or delete them.
+
+```bash
+# List past conversations (most recent first)
+androideai memory list
+# or with a custom limit
+androideai memory list -n 50
+
+# Show every message of a conversation
+androideai memory show 7
+
+# Resume a conversation: the original task is restored, and your
+# new message is appended as a user turn. The LLM keeps the full context.
+androideai agent --resume 7 "now add the forgot-password screen"
+
+# Delete a single conversation
+androideai memory delete 7
+
+# Delete every conversation (asks for confirmation unless -y)
+androideai memory purge -y
+```
+
+Sessions transition between three states:
+
+| Status | Meaning |
+|--------|---------|
+| `active` | The loop is currently running or was interrupted (Ctrl-C, denied plan, error). Resumable. |
+| `completed` | The agent finished a task successfully. Listed for reference; you can still resume it. |
+| `interrupted` | The session was cut short. Always resumable with `--resume`. |
+
+When a run finishes, the agent prints the conversation ID and a hint
+such as:
+
+```
+[Memory] Conversación guardada con ID 7. Usa 'androideai memory show 7'
+para revisarla o 'androideai agent --resume 7 "..."' para continuarla.
 ```
 
 ## Skills Management

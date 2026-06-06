@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"bufio"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/pablofelipe1207/androideia/internal/android"
 	"github.com/pablofelipe1207/androideia/internal/brain"
@@ -220,6 +223,40 @@ func (r *ToolRegistry) registerDefaultTools() {
 		{
 			Type: "function",
 			Function: llm.ToolFunction{
+				Name:        "confirm_plan",
+				Description: "Solicita confirmación explícita al usuario antes de proceder con un plan, cambio destructivo o escritura de archivos. SIEMPRE usa esta herramienta cuando vayas a escribir código, modificar archivos o ejecutar una acción importante, en lugar de pedir confirmación en texto plano. Devuelve 'approved' (con cualquier feedback opcional), 'denied' si el usuario rechaza, o 'edit:<nuevo_plan>' si el usuario pide ajustes.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"plan": map[string]interface{}{
+							"type":        "string",
+							"description": "Descripción clara y detallada del plan que se va a ejecutar. Incluye archivos a crear/modificar y el razonamiento.",
+						},
+					},
+					"required": []string{"plan"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        "ask_user",
+				Description: "Hace una pregunta al usuario y espera su respuesta en texto libre. Úsala para pedir aclaraciones, decisiones de diseño o feedback. La respuesta del usuario se devuelve como string.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"question": map[string]interface{}{
+							"type":        "string",
+							"description": "La pregunta que se va a hacer al usuario.",
+						},
+					},
+					"required": []string{"question"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
 				Name:        "find_similar_files",
 				Description: "Find similar files to understand project structure and where to place new files",
 				Parameters: map[string]interface{}{
@@ -263,6 +300,10 @@ func (r *ToolRegistry) ExecuteTool(name string, args map[string]interface{}) (st
 		return r.semanticSearch(args)
 	case "find_similar_files":
 		return r.findSimilarFiles(args)
+	case "confirm_plan":
+		return r.confirmPlan(args)
+	case "ask_user":
+		return r.askUser(args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -570,6 +611,123 @@ func (r *ToolRegistry) findSimilarFiles(args map[string]interface{}) (string, er
 	}
 
 	return fmt.Sprintf("Found %d similar files:\n%s", len(results), strings.Join(results, "\n")), nil
+}
+
+// confirmPlan solicita al usuario que confirme un plan antes de ejecutarlo.
+// Lee una respuesta interactiva y devuelve un resultado estructurado:
+//   - "approved" si el usuario acepta (puede incluir feedback)
+//   - "denied" si el usuario rechaza
+//   - "edit:<nuevo plan>" si el usuario quiere ajustar
+func (r *ToolRegistry) confirmPlan(args map[string]interface{}) (string, error) {
+	plan, _ := args["plan"].(string)
+	if plan == "" {
+		return "", fmt.Errorf("plan is required")
+	}
+
+	fmt.Println()
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Println("  PLAN PROPUESTO — requiere confirmación")
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Println(plan)
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Print("¿Apruebas este plan? [y=aprobar / n=rechazar / e=editar / feedback libre]: ")
+
+	response := readUserResponse()
+	response = strings.TrimSpace(response)
+	lower := strings.ToLower(response)
+
+	switch {
+	case lower == "" || lower == "n" || lower == "no":
+		return "denied", nil
+	case lower == "y" || lower == "yes" || lower == "s" || lower == "si" || lower == "sí":
+		return "approved", nil
+	case lower == "e" || lower == "edit" || lower == "editar":
+		fmt.Print("Nuevo plan: ")
+		newPlan := readUserResponse()
+		if strings.TrimSpace(newPlan) == "" {
+			return "denied", nil
+		}
+		return "edit:" + newPlan, nil
+	default:
+		// Cualquier otro input se trata como feedback libre y se aprueba con la nota.
+		if response == "" {
+			return "denied", nil
+		}
+		return "approved (feedback: " + response + ")", nil
+	}
+}
+
+// askUser hace una pregunta al usuario y devuelve su respuesta en texto libre.
+func (r *ToolRegistry) askUser(args map[string]interface{}) (string, error) {
+	question, _ := args["question"].(string)
+	if question == "" {
+		return "", fmt.Errorf("question is required")
+	}
+
+	fmt.Println()
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Println("  PREGUNTA DEL AGENTE")
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Println(question)
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Print("Tu respuesta: ")
+
+	return strings.TrimSpace(readUserResponse()), nil
+}
+
+// readUserResponse lee una línea de stdin. Si no hay TTY disponible
+// (por ejemplo, en tests), devuelve una cadena vacía.
+//
+// Se apoya en un bufio.Reader compartido para que llamadas consecutivas
+// (p. ej. confirm_plan → "e" → segundo read para "Nuevo plan:") sigan
+// sobre la misma cola de bytes. Si el reader es reemplazado por tests
+// (swapStdinReader), se recrea el bufio.
+var stdinReader = func() interface{ Read(p []byte) (n int, err error) } {
+	return os.Stdin
+}
+
+var (
+	stdinMu     sync.Mutex
+	stdinBuf    *bufio.Reader
+	stdinSrcKey uintptr // identidad del reader actual
+)
+
+func readUserResponse() string {
+	stdinMu.Lock()
+	defer stdinMu.Unlock()
+
+	r := stdinReader()
+	// Si el reader cambió, descartamos el buffer.
+	if stdinBuf == nil || !sameReaderKey(stdinSrcKey, r) {
+		stdinBuf = bufio.NewReader(r)
+		stdinSrcKey = readerKey(r)
+	}
+	line, err := stdinBuf.ReadString('\n')
+	if err != nil {
+		// Si el reader está vacío (EOF), descartamos el buffer para
+		// que la siguiente llamada pueda reintentar con un reader
+		// nuevo en lugar de quedarse pegada en EOF.
+		if err.Error() == "EOF" {
+			stdinBuf = nil
+		}
+		return ""
+	}
+	return strings.TrimRight(line, "\r\n")
+}
+
+// readerKey devuelve una clave que identifica al reader.
+// Como Go no permite comparar interfaces de forma directa con ==
+// para tipos diferentes, usamos reflect para obtener el puntero.
+func readerKey(r interface{}) uintptr {
+	v := reflect.ValueOf(r)
+	if v.Kind() == reflect.Ptr || v.Kind() == reflect.UnsafePointer {
+		return v.Pointer()
+	}
+	return 0
+}
+
+func sameReaderKey(prev uintptr, r interface{}) bool {
+	return prev == readerKey(r)
 }
 
 func parseToolCall(toolCall llm.ToolCall) (string, map[string]interface{}, error) {

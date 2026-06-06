@@ -105,6 +105,30 @@ func (s *Store) migrate() error {
 			log TEXT,
 			ts INTEGER
 		)`,
+
+		// Memoria del agente: sesiones de conversación persistentes
+		`CREATE TABLE IF NOT EXISTS conversations (
+			id INTEGER PRIMARY KEY,
+			title TEXT,
+			task TEXT NOT NULL,
+			status TEXT DEFAULT 'active',
+			approval_mode TEXT,
+			provider TEXT,
+			model TEXT,
+			created_at INTEGER,
+			updated_at INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS messages (
+			id INTEGER PRIMARY KEY,
+			conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			content TEXT,
+			tool_calls TEXT,
+			tool_call_id TEXT,
+			tool_name TEXT,
+			created_at INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id)`,
 	}
 
 	for _, m := range migrations {

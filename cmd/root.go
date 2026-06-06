@@ -48,4 +48,5 @@ func init() {
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(modelsCmd)
+	rootCmd.AddCommand(memoryCmd)
 }

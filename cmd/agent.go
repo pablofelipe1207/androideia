@@ -8,22 +8,31 @@ import (
 	"github.com/pablofelipe1207/androideia/internal/agent"
 	"github.com/pablofelipe1207/androideia/internal/config"
 	"github.com/pablofelipe1207/androideia/internal/llm"
+	"github.com/pablofelipe1207/androideia/internal/memory"
 	"github.com/pablofelipe1207/androideia/internal/store"
 	"github.com/spf13/cobra"
 )
 
 var (
-	agentModel string
+	agentModel    string
+	agentResumeID int64
+	agentSession  string
 )
 
 var agentCmd = &cobra.Command{
 	Use:   "agent [task]",
 	Short: "Ejecuta el loop de desarrollo guiado",
-	Long:  `Inicia el agente de desarrollo para ejecutar tareas de forma guiada.`,
-	Args:  cobra.ExactArgs(1),
+	Long: `Inicia el agente de desarrollo para ejecutar tareas de forma guiada.
+
+La sesión queda persistida en .androideai/core.db; puedes verla con
+"androideai memory list" y continuarla con --resume <id>.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		task := args[0]
-		fmt.Printf("Starting agent for task: %s\n\n", task)
+		// El task es opcional si se hace --resume.
+		var task string
+		if len(args) == 1 {
+			task = args[0]
+		}
 
 		// Load configuration
 		cfg, err := config.LoadConfig()
@@ -38,9 +47,6 @@ var agentCmd = &cobra.Command{
 		}
 
 		// Auto-resolve model from Ollama if provider is ollama.
-		// If Ollama has exactly one model installed, use it (and notify the
-		// user). If the configured model is available, keep it. Otherwise
-		// the helper returns an error listing available models.
 		if cfg.Provider == "ollama" {
 			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
 			if err != nil {
@@ -85,9 +91,32 @@ var agentCmd = &cobra.Command{
 		}
 
 		// Create and run agent
-		agent := agent.NewAgent(llmProvider, s.DB(), cfg)
-		if err := agent.Run(task); err != nil {
+		ag := agent.NewAgent(llmProvider, s.DB(), cfg)
+		mem := memory.NewMemory(s.DB())
+		ag.SetMemory(mem)
+
+		// Reanudar conversación previa si se pidió.
+		if agentResumeID > 0 {
+			original, err := ag.ResumeSession(agentResumeID)
+			if err != nil {
+				return fmt.Errorf("error resuming session: %w", err)
+			}
+			fmt.Printf("[Memory] Resuming conversation #%d\n", agentResumeID)
+			fmt.Printf("[Memory] Original task: %s\n", original)
+			if task != "" {
+				fmt.Printf("[Memory] New follow-up: %s\n", task)
+			}
+		} else if task == "" {
+			return fmt.Errorf("provide a task, or use --resume <id> to continue a previous conversation")
+		}
+
+		if err := ag.Run(task); err != nil {
 			return fmt.Errorf("agent error: %w", err)
+		}
+
+		// Informar al usuario dónde queda la sesión para futuros resumes.
+		if id := ag.ConversationID(); id > 0 {
+			fmt.Printf("\n[Memory] Conversación guardada con ID %d. Usa 'androideai memory show %d' para revisarla o 'androideai agent --resume %d \"...\"' para continuarla.\n", id, id, id)
 		}
 
 		return nil
@@ -96,4 +125,6 @@ var agentCmd = &cobra.Command{
 
 func init() {
 	agentCmd.Flags().StringVarP(&agentModel, "model", "m", "", "Override del modelo LLM para esta ejecución (ej: qwen3-coder-64k-32k:latest)")
+	agentCmd.Flags().Int64Var(&agentResumeID, "resume", 0, "Reanuda una conversación persistida por ID")
+	agentCmd.Flags().StringVar(&agentSession, "session", "", "Nombre opcional para la sesión (sólo metadata)")
 }
