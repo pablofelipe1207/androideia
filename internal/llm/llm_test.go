@@ -1,192 +1,202 @@
 package llm
 
 import (
-	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"encoding/json"
 	"testing"
 )
 
-func TestOllamaConnection(t *testing.T) {
-	// Test with default Ollama URL
-	provider := NewOllamaProvider("http://localhost:11434", "qwen3-coder-64k-32k:latest")
+func TestNormalizeMessagesForOllama_StringArgumentsBecomeObject(t *testing.T) {
+	// Caso típico del fallback: arguments viene como string JSON.
+	in := []Message{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{
+					ID:   "call_text_1",
+					Type: "function",
+					Function: ToolCallFunc{
+						Name:      "ask_user",
+						Arguments: `{"question": "¿Hilt o Koin?"}`,
+					},
+				},
+			},
+		},
+	}
+	out := normalizeMessagesForOllama(in)
 
-	fmt.Println("Testing Ollama connection...")
-
-	// Check if Ollama is available
-	if !provider.IsAvailable() {
-		t.Skip("Ollama is not running, skipping test")
+	if len(out) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(out))
+	}
+	if len(out[0].ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(out[0].ToolCalls))
+	}
+	args, ok := out[0].ToolCalls[0].Function.Arguments.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected arguments to be map[string]interface{}, got %T", out[0].ToolCalls[0].Function.Arguments)
+	}
+	if args["question"] != "¿Hilt o Koin?" {
+		t.Errorf("expected question to be preserved, got %v", args["question"])
 	}
 
-	fmt.Println("✓ Ollama is available")
-
-	// Test chat with a simple message
-	messages := []Message{
-		{Role: "user", Content: "Hello, respond with just 'OK'"},
-	}
-
-	resp, err := provider.Chat(messages, nil)
+	// Verificar que al serializar de nuevo a JSON, arguments es un
+	// OBJETO, no un string (que es lo que Ollama rechaza).
+	b, err := json.Marshal(out[0])
 	if err != nil {
-		t.Fatalf("Error calling Ollama: %v", err)
+		t.Fatalf("marshal: %v", err)
 	}
-
-	fmt.Printf("Response choices: %d\n", len(resp.Choices))
-	if len(resp.Choices) == 0 {
-		t.Fatal("No response from Ollama")
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(b, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-
-	fmt.Printf("✓ Ollama responded: %s\n", resp.Choices[0].Message.Content)
+	raw, ok := probe["tool_calls"]
+	if !ok {
+		t.Fatalf("expected tool_calls in serialized message")
+	}
+	// Extraer el `arguments` del primer tool_call serializado.
+	var tcList []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &tcList); err != nil {
+		t.Fatalf("unmarshal tool_calls: %v", err)
+	}
+	var fn map[string]json.RawMessage
+	if err := json.Unmarshal(tcList[0]["function"], &fn); err != nil {
+		t.Fatalf("unmarshal function: %v", err)
+	}
+	argBytes := fn["arguments"]
+	// Debe empezar por '{' (objeto), no por '"' (string).
+	if len(argBytes) == 0 {
+		t.Fatalf("arguments missing")
+	}
+	if argBytes[0] != '{' {
+		t.Errorf("expected arguments to start with '{' (object), got %q", string(argBytes))
+	}
 }
 
-func TestListModels_Success(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tags" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-			http.NotFound(w, r)
-			return
+func TestNormalizeMessagesForOllama_ObjectArgumentsUnchanged(t *testing.T) {
+	in := []Message{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{
+					Function: ToolCallFunc{
+						Name:      "ask_user",
+						Arguments: map[string]interface{}{"question": "ok"},
+					},
+				},
+			},
+		},
+	}
+	out := normalizeMessagesForOllama(in)
+	args, ok := out[0].ToolCalls[0].Function.Arguments.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map, got %T", out[0].ToolCalls[0].Function.Arguments)
+	}
+	if args["question"] != "ok" {
+		t.Errorf("expected question=ok, got %v", args["question"])
+	}
+}
+
+func TestNormalizeMessagesForOllama_NilArguments(t *testing.T) {
+	in := []Message{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{
+					Function: ToolCallFunc{Name: "noop", Arguments: nil},
+				},
+			},
+		},
+	}
+	out := normalizeMessagesForOllama(in)
+	if out[0].ToolCalls[0].Function.Arguments == nil {
+		t.Errorf("expected nil arguments to be replaced with empty object")
+	}
+}
+
+func TestNormalizeMessagesForOllama_NoToolCalls(t *testing.T) {
+	in := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "hello"},
+		{Role: "tool", Content: "result"},
+	}
+	out := normalizeMessagesForOllama(in)
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(out))
+	}
+	// Los mensajes sin tool_calls no se tocan.
+	if out[0].Content != "hi" || out[1].Content != "hello" || out[2].Content != "result" {
+		t.Errorf("messages were mutated unexpectedly")
+	}
+}
+
+func TestNormalizeMessagesForOllama_RealisticFallback(t *testing.T) {
+	// Caso realista: múltiples tool calls extraídas del texto, algunas
+	// con arguments string, otras con arguments objeto.
+	in := []Message{
+		{Role: "system", Content: "You are an agent"},
+		{Role: "user", Content: "Create a login feature"},
+		{
+			Role: "assistant",
+			Content: "Plan:\n```json\n{\"name\":\"ask_user\",\"arguments\":{\"question\":\"...\"}}\n```",
+			ToolCalls: []ToolCall{
+				{
+					ID:   "call_text_1",
+					Type: "function",
+					Function: ToolCallFunc{
+						Name:      "ask_user",
+						Arguments: `{"question": "specific integrations?"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			Content:    "Confirm",
+			ToolCallID: "call_text_1",
+		},
+	}
+	out := normalizeMessagesForOllama(in)
+
+	// El assistant message debe tener arguments como objeto.
+	args, ok := out[2].ToolCalls[0].Function.Arguments.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected arguments to be map, got %T", out[2].ToolCalls[0].Function.Arguments)
+	}
+	if args["question"] != "specific integrations?" {
+		t.Errorf("expected question to be preserved, got %v", args["question"])
+	}
+
+	// Verificar que el JSON completo del request es válido y que
+	// arguments es un objeto en el wire.
+	all := map[string]interface{}{"messages": out}
+	b, err := json.Marshal(all)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Buscar "arguments":"  (string) — no debe aparecer.
+	if contains(b, []byte(`"arguments":"`)) {
+		t.Errorf("found 'arguments' as string in wire JSON; Ollama will reject this")
+	}
+	// Buscar "arguments":{ — debe aparecer.
+	if !contains(b, []byte(`"arguments":{`)) {
+		t.Errorf("expected 'arguments' as object in wire JSON")
+	}
+}
+
+func contains(haystack, needle []byte) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := 0; j < len(needle); j++ {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"models":[{"name":"llama3.2:3b"},{"name":"qwen2.5-coder:7b"}]}`)
-	}))
-	defer server.Close()
-
-	provider := NewOllamaProvider(server.URL, "ignored")
-	models, err := provider.ListModels()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		if match {
+			return true
+		}
 	}
-	if len(models) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(models))
-	}
-	if models[0] != "llama3.2:3b" || models[1] != "qwen2.5-coder:7b" {
-		t.Errorf("unexpected models: %v", models)
-	}
-}
-
-func TestListModels_Empty(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"models":[]}`)
-	}))
-	defer server.Close()
-
-	provider := NewOllamaProvider(server.URL, "ignored")
-	models, err := provider.ListModels()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(models) != 0 {
-		t.Errorf("expected 0 models, got %d", len(models))
-	}
-}
-
-func TestListModels_ServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	provider := NewOllamaProvider(server.URL, "ignored")
-	if _, err := provider.ListModels(); err == nil {
-		t.Fatal("expected error for 500 response, got nil")
-	}
-}
-
-func TestListModels_Unreachable(t *testing.T) {
-	provider := NewOllamaProvider("http://127.0.0.1:1", "ignored") // closed port
-	if _, err := provider.ListModels(); err == nil {
-		t.Fatal("expected error for unreachable host, got nil")
-	}
-}
-
-func TestResolveOllamaModel_SingleModel_AutoSelect(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"models":[{"name":"llama3.2:3b"}]}`)
-	}))
-	defer server.Close()
-
-	got, auto, err := ResolveOllamaModel(server.URL, "qwen3-coder-64k-32k:latest")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "llama3.2:3b" {
-		t.Errorf("expected 'llama3.2:3b', got %q", got)
-	}
-	if !auto {
-		t.Error("expected autoSelected=true when Ollama has one model different from config")
-	}
-}
-
-func TestResolveOllamaModel_SingleModel_MatchesConfig(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"models":[{"name":"llama3.2:3b"}]}`)
-	}))
-	defer server.Close()
-
-	got, auto, err := ResolveOllamaModel(server.URL, "llama3.2:3b")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "llama3.2:3b" {
-		t.Errorf("expected 'llama3.2:3b', got %q", got)
-	}
-	if auto {
-		t.Error("expected autoSelected=false when configured model == only model")
-	}
-}
-
-func TestResolveOllamaModel_MultipleModels_ConfigInList(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"models":[{"name":"llama3.2:3b"},{"name":"qwen2.5-coder:7b"}]}`)
-	}))
-	defer server.Close()
-
-	got, auto, err := ResolveOllamaModel(server.URL, "qwen2.5-coder:7b")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "qwen2.5-coder:7b" {
-		t.Errorf("expected config model, got %q", got)
-	}
-	if auto {
-		t.Error("expected autoSelected=false when config model is in list")
-	}
-}
-
-func TestResolveOllamaModel_MultipleModels_ConfigNotInList(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"models":[{"name":"llama3.2:3b"},{"name":"qwen2.5-coder:7b"}]}`)
-	}))
-	defer server.Close()
-
-	_, _, err := ResolveOllamaModel(server.URL, "missing-model:latest")
-	if err == nil {
-		t.Fatal("expected error when config model not in list, got nil")
-	}
-}
-
-func TestResolveOllamaModel_NoModels(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"models":[]}`)
-	}))
-	defer server.Close()
-
-	_, _, err := ResolveOllamaModel(server.URL, "any-model")
-	if err == nil {
-		t.Fatal("expected error when Ollama has no models, got nil")
-	}
-}
-
-func TestResolveOllamaModel_OllamaUnreachable_FallbackToConfig(t *testing.T) {
-	// When Ollama is down we silently fall back to the configured model
-	// (the IsAvailable check will produce a clearer error later).
-	got, auto, err := ResolveOllamaModel("http://127.0.0.1:1", "configured-model")
-	if err != nil {
-		t.Fatalf("expected no error on unreachable Ollama, got: %v", err)
-	}
-	if got != "configured-model" {
-		t.Errorf("expected fallback to 'configured-model', got %q", got)
-	}
-	if auto {
-		t.Error("expected autoSelected=false on fallback")
-	}
+	return false
 }

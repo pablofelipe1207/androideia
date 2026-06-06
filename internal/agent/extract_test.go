@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -97,9 +96,9 @@ And also:
 				if calls[i].ID == "" {
 					t.Errorf("call %d: missing ID", i)
 				}
-				// Verificar que arguments es JSON parseable
-				if _, ok := calls[i].Function.Arguments.(string); !ok {
-					t.Errorf("call %d: arguments should be a string, got %T", i, calls[i].Function.Arguments)
+				// Verificar que arguments es un objeto (Ollama lo exige).
+				if _, ok := calls[i].Function.Arguments.(map[string]interface{}); !ok {
+					t.Errorf("call %d: arguments should be map[string]interface{}, got %T", i, calls[i].Function.Arguments)
 				}
 			}
 		})
@@ -135,14 +134,17 @@ Let's create a new module for authentication if it doesn't exist.
 	if calls[1].Function.Name != "write_file" {
 		t.Errorf("expected second call write_file, got %q", calls[1].Function.Name)
 	}
-	// Verify arguments are valid JSON
+	// Verify arguments are valid JSON object (no strings, Ollama requires objects)
 	for i, c := range calls {
-		argsStr, ok := c.Function.Arguments.(string)
+		argsMap, ok := c.Function.Arguments.(map[string]interface{})
 		if !ok {
-			t.Fatalf("call %d: arguments not a string", i)
+			t.Fatalf("call %d: arguments should be map[string]interface{}, got %T", i, c.Function.Arguments)
 		}
-		if !strings.HasPrefix(argsStr, "{") {
-			t.Errorf("call %d: arguments should start with '{', got %q", i, argsStr)
+		if _, hasPath := argsMap["path"]; !hasPath {
+			t.Errorf("call %d: missing 'path' in args", i)
+		}
+		if _, hasContent := argsMap["content"]; !hasContent {
+			t.Errorf("call %d: missing 'content' in args", i)
 		}
 	}
 

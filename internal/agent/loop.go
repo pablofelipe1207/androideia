@@ -747,12 +747,23 @@ func extractToolCallsFromContent(content string) []llm.ToolCall {
 			probe.Arguments = json.RawMessage(`{}`)
 		}
 
+		// Decodificamos los arguments a map[string]interface{} para que
+		// al serializar el mensaje se emita como OBJETO JSON, no como
+		// string. Ollama (a diferencia de OpenAI) exige que
+		// `tool_calls[i].function.arguments` sea un objeto; si lo
+		// enviamos como string devuelve 400 con
+		// "Value looks like object, but can't find closing '}' symbol".
+		var argsMap map[string]interface{}
+		if err := json.Unmarshal(probe.Arguments, &argsMap); err != nil {
+			argsMap = map[string]interface{}{}
+		}
+
 		calls = append(calls, llm.ToolCall{
 			ID:   fmt.Sprintf("call_text_%d", len(calls)+1),
 			Type: "function",
 			Function: llm.ToolCallFunc{
 				Name:      probe.Name,
-				Arguments: string(probe.Arguments),
+				Arguments: argsMap,
 			},
 		})
 		i = end - 1

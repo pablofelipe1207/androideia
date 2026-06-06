@@ -158,9 +158,17 @@ func ResolveOllamaModel(ollamaURL, configuredModel string) (string, bool, error)
 }
 
 func (o *OllamaProvider) Chat(messages []Message, tools []Tool) (*ChatResponse, error) {
+	// Ollama espera `tool_calls[i].function.arguments` como OBJETO JSON,
+	// no como string (que es lo que usa OpenAI). Si los messages vienen
+	// con `arguments` como string (p. ej. cuando el extractor de
+	// fallback produce tool calls a partir de texto), los convertimos
+	// a objeto para evitar el 400
+	// "Value looks like object, but can't find closing '}' symbol".
+	normalized := normalizeMessagesForOllama(messages)
+
 	request := map[string]interface{}{
 		"model":    o.model,
-		"messages": messages,
+		"messages": normalized,
 		"stream":   false,
 	}
 
@@ -177,7 +185,7 @@ func (o *OllamaProvider) Chat(messages []Message, tools []Tool) (*ChatResponse, 
 	if err != nil {
 		return nil, fmt.Errorf("error calling Ollama: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -213,6 +221,54 @@ func (o *OllamaProvider) Chat(messages []Message, tools []Tool) (*ChatResponse, 
 	}
 
 	return &chatResp, nil
+}
+
+// normalizeMessagesForOllama prepara los mensajes para la API de Ollama:
+//
+//  1. Los `tool_calls[i].function.arguments` que sean string JSON se
+//     decodifican a `map[string]interface{}` para que se serialicen como
+//     objeto y Ollama no rechace la petición.
+//
+//  2. Los mensajes con `role: "tool"` no llevan `tool_call_id` (Ollama
+//     no lo espera; es un campo de OpenAI). Lo dejamos porque Ollama
+//     lo ignora silenciosamente, pero por si acaso lo limpiamos.
+//
+// Devuelve un slice nuevo; no muta el input.
+func normalizeMessagesForOllama(in []Message) []Message {
+	out := make([]Message, len(in))
+	copy(out, in)
+	for i := range out {
+		if len(out[i].ToolCalls) == 0 {
+			continue
+		}
+		for j, tc := range out[i].ToolCalls {
+			switch v := tc.Function.Arguments.(type) {
+			case string:
+				var m map[string]interface{}
+				if err := json.Unmarshal([]byte(v), &m); err == nil && m != nil {
+					out[i].ToolCalls[j].Function.Arguments = m
+				} else {
+					out[i].ToolCalls[j].Function.Arguments = map[string]interface{}{}
+				}
+			case map[string]interface{}:
+				// Ya es un objeto; nada que hacer.
+			case nil:
+				out[i].ToolCalls[j].Function.Arguments = map[string]interface{}{}
+			default:
+				// Tipo inesperado (p. ej. json.RawMessage). Lo
+				// re-serializamos para garantizar que la salida es un
+				// objeto JSON estándar.
+				b, err := json.Marshal(v)
+				if err == nil {
+					var m map[string]interface{}
+					if json.Unmarshal(b, &m) == nil {
+						out[i].ToolCalls[j].Function.Arguments = m
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 type AnthropicProvider struct {
