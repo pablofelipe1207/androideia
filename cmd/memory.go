@@ -123,6 +123,63 @@ var memoryDeleteCmd = &cobra.Command{
 	},
 }
 
+var memoryCompleteCmd = &cobra.Command{
+	Use:   "complete [id]",
+	Short: "Marca una conversación como completada",
+	Long: `Marca una conversación como 'completed'. Por defecto, cuando una
+tarea termina, el agente pregunta al usuario; este comando es la vía
+manual por si la sesión quedó como 'active' o 'interrupted' y se
+quiere cerrar de forma definitiva.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return fmt.Errorf("ID inválido: %s", args[0])
+		}
+		mem, closer, err := openMemory()
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		conv, err := mem.GetConversation(id)
+		if err != nil {
+			return err
+		}
+		if conv.Status == memory.StatusCompleted {
+			fmt.Printf("La conversación %d ya estaba completada.\n", id)
+			return nil
+		}
+		if err := mem.SetStatus(id, memory.StatusCompleted); err != nil {
+			return err
+		}
+		fmt.Printf("Conversación %d marcada como completada.\n", id)
+		return nil
+	},
+}
+
+var memoryReopenCmd = &cobra.Command{
+	Use:   "reopen [id]",
+	Short: "Reabre una conversación completada (vuelve a 'active')",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return fmt.Errorf("ID inválido: %s", args[0])
+		}
+		mem, closer, err := openMemory()
+		if err != nil {
+			return err
+		}
+		defer closer()
+		if err := mem.SetStatus(id, memory.StatusActive); err != nil {
+			return err
+		}
+		fmt.Printf("Conversación %d reabierta. Usa 'androideai agent --resume %d \"...\"' para continuarla.\n", id, id)
+		return nil
+	},
+}
+
 var memoryPurgeCmd = &cobra.Command{
 	Use:   "purge",
 	Short: "Elimina TODAS las conversaciones",
@@ -226,4 +283,6 @@ func init() {
 	memoryCmd.AddCommand(memoryShowCmd)
 	memoryCmd.AddCommand(memoryDeleteCmd)
 	memoryCmd.AddCommand(memoryPurgeCmd)
+	memoryCmd.AddCommand(memoryCompleteCmd)
+	memoryCmd.AddCommand(memoryReopenCmd)
 }

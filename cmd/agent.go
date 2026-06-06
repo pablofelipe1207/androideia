@@ -116,7 +116,15 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 
 		// Informar al usuario dónde queda la sesión para futuros resumes.
 		if id := ag.ConversationID(); id > 0 {
-			fmt.Printf("\n[Memory] Conversación guardada con ID %d. Usa 'androideai memory show %d' para revisarla o 'androideai agent --resume %d \"...\"' para continuarla.\n", id, id, id)
+			fmt.Printf("\n[Memory] Conversación guardada con ID %d.\n", id)
+			fmt.Printf("  Ver mensajes:    androideai memory show %d\n", id)
+			fmt.Printf("  Continuar:       androideai agent --resume %d \"<nuevo mensaje>\"\n", id)
+			fmt.Printf("  Cerrar/eliminar: androideai memory delete %d\n", id)
+			if len(ag.GetConversationHistory()) > 0 {
+				fmt.Println("\nSi los archivos no aparecen en Android Studio, haz click")
+				fmt.Println("derecho en la raíz del proyecto → 'Synchronize' (o usa")
+				fmt.Println("'File → Sync Project with Gradle Files').")
+			}
 		}
 
 		return nil

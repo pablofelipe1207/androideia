@@ -169,6 +169,20 @@ func (a *Agent) Run(task string) error {
 		}
 
 		message := resp.Choices[0].Message
+
+		// Fallback: algunos modelos (o modelos mal entrenados / prompts
+		// mal interpretados) emiten las tool calls como JSON en el campo
+		// `content` en vez de usar el mecanismo nativo. Si no hay
+		// tool_calls nativos, intentamos extraerlos del texto para no
+		// dejar la tarea a medias.
+		if len(message.ToolCalls) == 0 && message.Content != "" {
+			extracted := extractToolCallsFromContent(message.Content)
+			if len(extracted) > 0 {
+				fmt.Printf("[Fallback] Extraídas %d tool call(s) del texto del agente.\n", len(extracted))
+				message.ToolCalls = extracted
+			}
+		}
+
 		a.messages = append(a.messages, message)
 		a.persistMessage(message.Role, message.Content, message.ToolCalls, "", "")
 
@@ -272,9 +286,18 @@ func (a *Agent) Run(task string) error {
 			continue
 		}
 
-		// No es una petición de confirmación: tarea terminada.
-		fmt.Println("\nAgent completed the task.")
-		a.markCompleted()
+		// No es una petición de confirmación: el agente no tiene
+		// más tool calls que ejecutar. En vez de declarar la tarea
+		// como completada por su cuenta, preguntamos al usuario.
+		completed := a.promptTaskCompletion()
+		if completed {
+			a.markCompleted()
+		} else {
+			// Mantener la sesión como active: el usuario puede
+			// continuarla con `androideai agent --resume <id> "..."`
+			// o cerrarla con `androideai memory delete <id>`.
+			a.markInterrupted()
+		}
 		return nil
 	}
 
@@ -425,6 +448,36 @@ func (a *Agent) promptUserForConfirmation() string {
 		// Feedback libre: se inyecta tal cual para que el LLM lo procese.
 		return "approved (user feedback: " + response + ")"
 	}
+}
+
+// promptTaskCompletion pregunta al usuario si la tarea quedó completa.
+// Devuelve true sólo si el usuario responde y/yes. Cualquier otra
+// respuesta (incluyendo Enter vacío) deja la sesión como `active`
+// para que pueda continuarse con `--resume`.
+//
+// El agente **nunca** debe marcarse a sí mismo como completado: es
+// siempre el usuario quien decide.
+func (a *Agent) promptTaskCompletion() bool {
+	fmt.Println()
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Println("  El agente ha terminado su turno.")
+	if len(a.taskStats.FilesCreated) > 0 {
+		fmt.Printf("  Archivos creados/modificados: %d\n", len(a.taskStats.FilesCreated))
+		for _, p := range a.taskStats.FilesCreated {
+			fmt.Printf("    - %s\n", p)
+		}
+	}
+	if a.taskStats.HasErrors {
+		fmt.Println("  ⚠ Hubo errores durante la ejecución.")
+	}
+	fmt.Println("  ¿La tarea quedó completada a tu satisfacción?")
+	fmt.Println("  [y=marcar como completada / N o Enter=mantener activa para continuar luego]")
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Print("> ")
+
+	response := readUserResponse()
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "y" || response == "yes" || response == "s" || response == "si" || response == "sí"
 }
 
 // searchRelevantKnowledge busca en brain entradas promovidas relacionadas
@@ -619,4 +672,90 @@ Only return the JSON, no other text.`, task, strings.Join(a.taskStats.FilesCreat
 // Conserva el nombre original para no romper consumidores externos/tests.
 func (a *Agent) storeTaskKnowledge(task string) {
 	a.storeTaskKnowledgeIfReady()
+}
+
+// extractToolCallsFromContent busca objetos JSON con la forma
+//   {"name": "<tool>", "arguments": {...}}
+// dentro de un texto y los devuelve como llm.ToolCall. Es tolerante a
+// explicaciones en lenguaje natural mezcladas con los JSON, y a JSON
+// envuelto en bloques de código markdown ```json ... ```.
+//
+// Se usa como red de seguridad para modelos que no usan la API nativa
+// de tool calling y en su lugar imprimen las llamadas como texto.
+func extractToolCallsFromContent(content string) []llm.ToolCall {
+	var calls []llm.ToolCall
+	for i := 0; i < len(content); i++ {
+		if content[i] != '{' {
+			continue
+		}
+		// Encontrar la `}` de cierre respetando strings y escapes.
+		depth := 0
+		inString := false
+		escaped := false
+		end := -1
+		for j := i; j < len(content); j++ {
+			c := content[j]
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				if inString {
+					escaped = true
+				}
+			case '"':
+				inString = !inString
+			case '{':
+				if !inString {
+					depth++
+				}
+			case '}':
+				if !inString {
+					depth--
+					if depth == 0 {
+						end = j + 1
+					}
+				}
+			}
+			if end != -1 {
+				break
+			}
+		}
+		if end == -1 {
+			continue
+		}
+		candidate := content[i:end]
+
+		// Comprobamos que sea un tool call (que tenga `name` y `arguments`).
+		var probe struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(candidate), &probe); err != nil {
+			i = end - 1
+			continue
+		}
+		if probe.Name == "" {
+			i = end - 1
+			continue
+		}
+
+		// Si `arguments` falta, inicializamos a {} para que el resto
+		// del código reciba un objeto JSON válido.
+		if len(probe.Arguments) == 0 {
+			probe.Arguments = json.RawMessage(`{}`)
+		}
+
+		calls = append(calls, llm.ToolCall{
+			ID:   fmt.Sprintf("call_text_%d", len(calls)+1),
+			Type: "function",
+			Function: llm.ToolCallFunc{
+				Name:      probe.Name,
+				Arguments: string(probe.Arguments),
+			},
+		})
+		i = end - 1
+	}
+	return calls
 }

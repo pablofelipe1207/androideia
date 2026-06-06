@@ -130,6 +130,12 @@ androideai memory show 7
 # new message is appended as a user turn. The LLM keeps the full context.
 androideai agent --resume 7 "now add the forgot-password screen"
 
+# Mark a session as completed by hand
+androideai memory complete 7
+
+# Reopen a completed session
+androideai memory reopen 7
+
 # Delete a single conversation
 androideai memory delete 7
 
@@ -141,17 +147,60 @@ Sessions transition between three states:
 
 | Status | Meaning |
 |--------|---------|
-| `active` | The loop is currently running or was interrupted (Ctrl-C, denied plan, error). Resumable. |
-| `completed` | The agent finished a task successfully. Listed for reference; you can still resume it. |
+| `active` | The loop is currently running or was interrupted (Ctrl-C, denied plan, error, or the user simply hit Enter at the end-of-task prompt). Resumable. |
+| `completed` | The agent finished a task successfully **and** the user confirmed. Listed for reference; you can still resume it. |
 | `interrupted` | The session was cut short. Always resumable with `--resume`. |
 
 When a run finishes, the agent prints the conversation ID and a hint
 such as:
 
 ```
-[Memory] Conversación guardada con ID 7. Usa 'androideai memory show 7'
-para revisarla o 'androideai agent --resume 7 "..."' para continuarla.
+[Memory] Conversación guardada con ID 7.
+  Ver mensajes:    androideai memory show 7
+  Continuar:       androideai agent --resume 7 "<nuevo mensaje>"
+  Cerrar/eliminar: androideai memory delete 7
+
+Si los archivos no aparecen en Android Studio, haz click
+derecho en la raíz del proyecto → 'Synchronize' (o usa
+'File → Sync Project with Gradle Files').
 ```
+
+### Who decides when a task is done?
+
+The agent never marks a session as `completed` on its own. When the
+loop ends without errors, the agent asks:
+
+```
+¿La tarea quedó completada a tu satisfacción?
+[y=marcar como completada / N o Enter=mantener activa para continuar luego]
+```
+
+Only answering `y`/`yes` flips the session to `completed`. Anything
+else (including a blank Enter) leaves it as `active` so you can
+`--resume` it later. If the user denies a plan, cancels, or an error
+occurs, the session is marked `interrupted` automatically.
+
+### Tool call fallback
+
+The LLM is instructed to invoke tools through the native tool calling
+mechanism (the `tool_calls` field of the response). As a safety net, the
+loop also scans the assistant message for JSON objects of the form
+`{"name": "...", "arguments": {...}}` and executes them as if they had
+been declared natively. This means a model that "prints" its tool calls
+will still write the files and create the resources it describes.
+
+### Android Studio / IntelliJ file refresh
+
+Android Studio does not always pick up new files immediately. After the
+agent finishes a run that created files, if they do not appear in the
+Project view:
+
+- Right-click the project root → **Synchronize**, or
+- **File → Sync Project with Gradle Files** (or **Invalidate Caches…**
+  if Synchronize does not work).
+
+This is an IDE limitation, not an agent bug — the files exist on disk
+and will be picked up by Gradle on the next build regardless.
 
 ## Skills Management
 

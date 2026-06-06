@@ -193,10 +193,22 @@ func (o *OllamaProvider) Chat(messages []Message, tools []Tool) (*ChatResponse, 
 		return nil, fmt.Errorf("error unmarshaling response: %w", err)
 	}
 
-	// Handle Ollama's response format (message field instead of choices)
-	if len(chatResp.Choices) == 0 && chatResp.Message.Content != "" {
-		chatResp.Choices = []Choice{
-			{Message: chatResp.Message},
+	// Handle Ollama's response format (message field at the top level
+	// instead of an OpenAI-style `choices` array). We wrap it so the
+	// rest of the agent code can use a uniform shape.
+	if len(chatResp.Choices) == 0 {
+		if chatResp.Message.Content != "" || len(chatResp.Message.ToolCalls) > 0 {
+			chatResp.Choices = []Choice{
+				{Message: chatResp.Message},
+			}
+		}
+	} else {
+		// En algunas versiones de Ollama el `message.tool_calls` viene
+		// tanto en el top-level como dentro de `choices[0]`. Si el
+		// `choices[0].message` no tiene tool_calls pero el top-level sí,
+		// copiamos.
+		if len(chatResp.Choices[0].Message.ToolCalls) == 0 && len(chatResp.Message.ToolCalls) > 0 {
+			chatResp.Choices[0].Message.ToolCalls = chatResp.Message.ToolCalls
 		}
 	}
 
