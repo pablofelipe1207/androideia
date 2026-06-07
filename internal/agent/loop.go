@@ -25,6 +25,7 @@ type Agent struct {
 	projectMD      *project.Metadata
 	conversationID int64
 	taskStats      TaskStats
+	maxTurns       int
 }
 
 type TaskStats struct {
@@ -38,11 +39,19 @@ type TaskStats struct {
 // y los metadatos del proyecto (AndroidManifest, libs.versions.toml)
 // con SetProjectMetadata.
 func NewAgent(llmProvider llm.Provider, db *sql.DB, cfg *config.Config) *Agent {
+	return NewAgentWithMaxTurns(llmProvider, db, cfg, 0)
+}
+
+func NewAgentWithMaxTurns(llmProvider llm.Provider, db *sql.DB, cfg *config.Config, maxTurns int) *Agent {
+	if maxTurns <= 0 {
+		maxTurns = 50
+	}
 	return &Agent{
 		llm:   llmProvider,
 		tools: NewToolRegistryWithConfig(db, cfg),
 		db:    db,
 		config: cfg,
+		maxTurns: maxTurns,
 		messages: []llm.Message{
 			{Role: "system", Content: SystemPrompt},
 		},
@@ -199,7 +208,7 @@ func (a *Agent) Run(task string) error {
 	}
 
 	// Run agent loop
-	const maxTurns = 25 // tope de seguridad para evitar loops infinitos
+	maxTurns := a.maxTurns // tope de seguridad para evitar loops infinitos
 	for turn := 0; turn < maxTurns; turn++ {
 		fmt.Println("Thinking...")
 

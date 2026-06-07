@@ -88,7 +88,7 @@ func DefaultModelsConfig() *ModelsConfig {
 	return &ModelsConfig{
 		Agent: AgentModelConfig{
 			Provider: "opencode_zen",
-			Model:    "minimax-m3-free",
+			Model:    "mimo-v2.5-free",
 		},
 		Semantic: SemanticModelConfig{
 			Provider:       "ollama",

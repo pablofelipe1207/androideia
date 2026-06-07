@@ -21,6 +21,7 @@ var (
 	agentSession  string
 	agentTimeout  int
 	agentYes      bool
+	agentMaxTurns int
 )
 
 var agentCmd = &cobra.Command{
@@ -149,7 +150,7 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 		}
 
 		// Create and run agent
-		ag := agent.NewAgent(llmProvider, s.DB(), cfg)
+		ag := agent.NewAgentWithMaxTurns(llmProvider, s.DB(), cfg, agentMaxTurns)
 
 		// Descubrir metadatos del proyecto Android (applicationId,
 		// namespace, libs.versions.toml) y pasarlos al agente. Si el
@@ -215,4 +216,5 @@ func init() {
 	agentCmd.Flags().StringVar(&agentSession, "session", "", "Nombre opcional para la sesión (sólo metadata)")
 	agentCmd.Flags().IntVar(&agentTimeout, "timeout", 0, "Timeout por llamada al LLM en segundos (default: config o 300). Súbelo si tu modelo es lento o el contexto es largo.")
 	agentCmd.Flags().BoolVarP(&agentYes, "yes", "y", false, "Auto-aprobar todas las operaciones (modo desatendido / CI). Omite confirmaciones de planes y escrituras.")
+	agentCmd.Flags().IntVar(&agentMaxTurns, "max-turns", 0, "Máximo de turnos del agente antes de forzar pausa (default: 25). Aumenta para tareas complejas.")
 }
