@@ -66,6 +66,38 @@ func (b *Brain) Save(entry *KnowledgeEntry, requireConfirmation bool) (int64, er
 	return id, nil
 }
 
+// SaveIfNotExists persiste la entrada sólo si no existe ya otra con el
+// mismo título. Se usa para sembrar el brain desde la clasificación
+// semántica (`androideai init`) sin generar duplicados cuando el
+// usuario corre el comando varias veces.
+//
+// Devuelve (id, true, nil) si insertó una nueva fila,
+// (existingID, false, nil) si ya existía una con ese título, o
+// (0, false, err) si algo falló.
+func (b *Brain) SaveIfNotExists(entry *KnowledgeEntry) (int64, bool, error) {
+	if entry.Status == "" {
+		entry.Status = "temp"
+	}
+
+	var existingID int64
+	err := b.db.QueryRow(
+		`SELECT id FROM knowledge_entries WHERE title = ? LIMIT 1`,
+		entry.Title,
+	).Scan(&existingID)
+	if err == nil {
+		return existingID, false, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, false, fmt.Errorf("error checking existing entry: %w", err)
+	}
+
+	id, err := b.Save(entry, false)
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
+}
+
 func (b *Brain) Search(query string) ([]*KnowledgeEntry, error) {
 	rows, err := b.db.Query(
 		`SELECT id, type, title, content, tags, file_refs, status, created_at

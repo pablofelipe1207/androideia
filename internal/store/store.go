@@ -97,6 +97,24 @@ func (s *Store) migrate() error {
 			vector BLOB
 		)`,
 
+		// Clasificación semántica por archivo: el LLM revisa cada .kt/.kts
+		// indexado, lo etiqueta (viewmodel, activity, usecase, ...) y
+		// guarda convenciones y arquitectura detectada. El agente usa
+		// esta tabla para localizar archivos existentes sin re-leer
+		// todo el proyecto.
+		`CREATE TABLE IF NOT EXISTS file_semantics (
+			file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+			type TEXT,
+			tags TEXT,
+			architecture TEXT,
+			conventions TEXT,
+			summary TEXT,
+			model TEXT,
+			updated_at INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_file_semantics_type ON file_semantics(type)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS file_semantics_fts USING fts5(path, type, tags, architecture, summary, conventions)`,
+
 		// Operativos
 		`CREATE TABLE IF NOT EXISTS build_history (
 			id INTEGER PRIMARY KEY,

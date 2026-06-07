@@ -16,6 +16,7 @@ import (
 	"github.com/pablofelipe1207/androideia/internal/config"
 	"github.com/pablofelipe1207/androideia/internal/index"
 	"github.com/pablofelipe1207/androideia/internal/llm"
+	"github.com/pablofelipe1207/androideia/internal/scaffold"
 	"github.com/pablofelipe1207/androideia/internal/semantic"
 )
 
@@ -223,6 +224,27 @@ func (r *ToolRegistry) registerDefaultTools() {
 		{
 			Type: "function",
 			Function: llm.ToolFunction{
+				Name:        "semantic_locate",
+				Description: "Locate existing files in the project using the LLM-built semantic index. Use this BEFORE writing any file to know: (a) whether a file with that role (ViewModel, Activity, UseCase, Repository, ...) already exists and where it lives, (b) how files of that role are written in this project (conventions), and (c) which architecture the project uses. Examples of queries: 'viewmodel' (lists all ViewModels), 'usecase', 'LoginViewModel' (a specific file), 'tag:auth' (any file tagged 'auth').",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "What to look for. Either a type (viewmodel, usecase, repository, dao, di_module, activity, composable, nav_route, data_class, entity, service, application, test, build), a tag prefix 'tag:<name>', or a substring of a file path/class name.",
+						},
+						"limit": map[string]interface{}{
+							"type":        "integer",
+							"description": "Maximum number of results (default: 10).",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
 				Name:        "confirm_plan",
 				Description: "Solicita confirmación explícita al usuario antes de proceder con un plan, cambio destructivo o escritura de archivos. SIEMPRE usa esta herramienta cuando vayas a escribir código, modificar archivos o ejecutar una acción importante, en lugar de pedir confirmación en texto plano. Devuelve 'approved' (con cualquier feedback opcional), 'denied' si el usuario rechaza, o 'edit:<nuevo_plan>' si el usuario pide ajustes.",
 				Parameters: map[string]interface{}{
@@ -271,6 +293,87 @@ func (r *ToolRegistry) registerDefaultTools() {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        "android_scaffold",
+				Description: "Get a canonical Android Kotlin template for a given role (viewmodel, composable, activity, usecase, repository, dao, di_module, data_class, entity, nav_route) AND/OR check whether files of that role already exist in the project via the semantic index. ALWAYS call this BEFORE write_file when creating a new .kt/.kts file. Actions: 'check' (search semantic for existing files of role), 'template' (return the canonical code template filled with the given name), 'both' (default: do check + template).",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"role": map[string]interface{}{
+							"type":        "string",
+							"description": "Component role. One of: viewmodel, composable, activity, usecase, repository, dao, di_module, data_class, entity, nav_route.",
+							"enum":        []string{"viewmodel", "composable", "activity", "usecase", "repository", "dao", "di_module", "data_class", "entity", "nav_route"},
+						},
+						"name": map[string]interface{}{
+							"type":        "string",
+							"description": "PascalCase name of the component (e.g. 'Login' for LoginViewModel / LoginScreen / LoginUseCase).",
+						},
+						"action": map[string]interface{}{
+							"type":        "string",
+							"description": "What to return: 'check' = search semantic for existing files of the role; 'template' = return the canonical code template; 'both' (default) = do check first, then template (existing files listed at the top so you can mirror their style).",
+							"enum":        []string{"check", "template", "both"},
+						},
+						"feature": map[string]interface{}{
+							"type":        "string",
+							"description": "Lowercase feature slug used inside the template (e.g. 'login', 'checkout').",
+						},
+						"package": map[string]interface{}{
+							"type":        "string",
+							"description": "Target Kotlin package, e.g. 'com.example.app.ui.login'. The CLI will derive a sensible default if omitted.",
+						},
+						"app_package": map[string]interface{}{
+							"type":        "string",
+							"description": "Application's root package (e.g. 'com.example.app'). Only used by the activity template.",
+						},
+						"repository_package": map[string]interface{}{
+							"type":        "string",
+							"description": "Package of the repository the use case depends on. Only used by the usecase template.",
+						},
+						"repository_name": map[string]interface{}{
+							"type":        "string",
+							"description": "Repository name (PascalCase, no 'Repository' suffix) used inside the usecase template.",
+						},
+						"entity_name": map[string]interface{}{
+							"type":        "string",
+							"description": "Entity name (PascalCase) used inside the dao template.",
+						},
+						"table": map[string]interface{}{
+							"type":        "string",
+							"description": "SQL table name used inside the dao / entity templates.",
+						},
+						"return_type": map[string]interface{}{
+							"type":        "string",
+							"description": "Generic return type used inside the usecase template (e.g. 'User', 'List<Product>').",
+						},
+					},
+					"required": []string{"role", "name"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        "validate_kotlin",
+				Description: "Validate a Kotlin/Android file against the contract of a given role (viewmodel, composable, activity, usecase, repository, dao, di_module, data_class, entity, nav_route). Returns a list of errors and warnings. ALWAYS call this AFTER write_file and BEFORE confirm_plan so you catch missing UiState/UiEvent/UiEffect, missing hiltViewModel(), missing Hilt annotations, etc. before showing the plan to the user.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"path": map[string]interface{}{
+							"type":        "string",
+							"description": "Path of the file to validate (relative to the project root or absolute).",
+						},
+						"role": map[string]interface{}{
+							"type":        "string",
+							"description": "Component role. One of: viewmodel, composable, activity, usecase, repository, dao, di_module, data_class, entity, nav_route.",
+							"enum":        []string{"viewmodel", "composable", "activity", "usecase", "repository", "dao", "di_module", "data_class", "entity", "nav_route"},
+						},
+					},
+					"required": []string{"path", "role"},
+				},
+			},
+		},
 	}
 }
 
@@ -298,8 +401,14 @@ func (r *ToolRegistry) ExecuteTool(name string, args map[string]interface{}) (st
 		return r.emulator(args)
 	case "semantic_search":
 		return r.semanticSearch(args)
+	case "semantic_locate":
+		return r.semanticLocate(args)
 	case "find_similar_files":
 		return r.findSimilarFiles(args)
+	case "android_scaffold":
+		return r.androidScaffold(args)
+	case "validate_kotlin":
+		return r.validateKotlin(args)
 	case "confirm_plan":
 		return r.confirmPlan(args)
 	case "ask_user":
@@ -576,6 +685,59 @@ func (r *ToolRegistry) semanticSearch(args map[string]interface{}) (string, erro
 	return strings.Join(output, "\n"), nil
 }
 
+// semanticLocate consulta el índice LLM de archivos. El agente debe
+// usarlo ANTES de crear un archivo nuevo para verificar si ya existe
+// alguno con el mismo rol (ViewModel, UseCase, ...) y para conocer
+// las convenciones del proyecto (arquitectura, dependencias, etc.).
+func (r *ToolRegistry) semanticLocate(args map[string]interface{}) (string, error) {
+	query, ok := args["query"].(string)
+	if !ok {
+		return "", fmt.Errorf("query is required")
+	}
+
+	limit := 10
+	if l, ok := args["limit"].(float64); ok {
+		limit = int(l)
+	}
+
+	if r.semantic == nil {
+		return "", fmt.Errorf("semantic index not available. Make sure Ollama is running and that you have run 'androideai semantic index'")
+	}
+
+	results, err := r.semantic.Locate(query, limit)
+	if err != nil {
+		return "", fmt.Errorf("error locating files: %w", err)
+	}
+
+	if len(results) == 0 {
+		arch, _, _ := r.semantic.ArchitectureSummary()
+		return fmt.Sprintf("Sin coincidencias para %q en el índice semántico. (Arquitectura detectada: %s)\nSi esperabas resultados, asegúrate de haber corrido 'androideai semantic index' al menos una vez.", query, arch), nil
+	}
+
+	var out []string
+	out = append(out, fmt.Sprintf("📚 %d coincidencia(s) en el índice semántico para %q:\n", len(results), query))
+	for i, loc := range results {
+		out = append(out, fmt.Sprintf("%d. %s", i+1, loc.Path))
+		if loc.Package != "" {
+			out = append(out, fmt.Sprintf("   package: %s   layer: %s   module: %s", loc.Package, loc.Layer, loc.Module))
+		} else {
+			out = append(out, fmt.Sprintf("   layer: %s   module: %s", loc.Layer, loc.Module))
+		}
+		out = append(out, fmt.Sprintf("   type: %s   tags: %s", loc.Type, strings.Join(loc.Tags, ", ")))
+		if loc.Summary != "" {
+			out = append(out, fmt.Sprintf("   summary: %s", loc.Summary))
+		}
+		if loc.Conventions != "" {
+			out = append(out, fmt.Sprintf("   conventions: %s", loc.Conventions))
+		}
+		out = append(out, "")
+	}
+
+	arch, _, _ := r.semantic.ArchitectureSummary()
+	out = append(out, fmt.Sprintf("Arquitectura del proyecto: %s", arch))
+	return strings.Join(out, "\n"), nil
+}
+
 func (r *ToolRegistry) findSimilarFiles(args map[string]interface{}) (string, error) {
 	fileType, ok := args["file_type"].(string)
 	if !ok {
@@ -611,6 +773,198 @@ func (r *ToolRegistry) findSimilarFiles(args map[string]interface{}) (string, er
 	}
 
 	return fmt.Sprintf("Found %d similar files:\n%s", len(results), strings.Join(results, "\n")), nil
+}
+
+// androidScaffold combina la búsqueda semántica con la entrega de la
+// plantilla canónica del rol. Por defecto hace las dos cosas: primero
+// lista los archivos existentes del rol (para que el agente los
+// inspeccione con read_file y copie convenciones) y luego devuelve la
+// plantilla lista para rellenar.
+func (r *ToolRegistry) androidScaffold(args map[string]interface{}) (string, error) {
+	roleStr, _ := args["role"].(string)
+	name, _ := args["name"].(string)
+	action, _ := args["action"].(string)
+	if action == "" {
+		action = "both"
+	}
+
+	if roleStr == "" || name == "" {
+		return "", fmt.Errorf("role and name are required")
+	}
+	role := scaffold.Role(roleStr)
+	if !scaffold.IsValidRole(role) {
+		return "", fmt.Errorf("unknown role %q (supported: %s)", roleStr, strings.Join(rolesAsStrings(), ", "))
+	}
+
+	spec, err := scaffold.SpecFor(role)
+	if err != nil {
+		return "", err
+	}
+
+	var out []string
+
+	// ---- (1) Buscar referencias existentes en el índice semántico ----
+	if action == "check" || action == "both" {
+		existing := r.locateExisting(roleStr, 5)
+		if len(existing) > 0 {
+			out = append(out, fmt.Sprintf("📚 %d archivo(s) existente(s) con rol %q en el proyecto:", len(existing), role))
+			for _, e := range existing {
+				out = append(out, fmt.Sprintf("   • %s", e.Path))
+				if e.Package != "" {
+					out = append(out, fmt.Sprintf("     package: %s   layer: %s", e.Package, e.Layer))
+				}
+				if e.Summary != "" {
+					out = append(out, fmt.Sprintf("     summary: %s", e.Summary))
+				}
+				if e.Conventions != "" {
+					out = append(out, fmt.Sprintf("     conventions: %s", e.Conventions))
+				}
+			}
+			out = append(out, "")
+			out = append(out, "👉 Recomendación: usa read_file sobre uno de estos para copiar convenciones exactas del proyecto, ANTES de generar el tuyo desde la plantilla.")
+			out = append(out, "")
+		} else {
+			out = append(out, fmt.Sprintf("📚 No hay archivos existentes con rol %q en el índice semántico.", role))
+			if action == "both" {
+				out = append(out, "   (Usa la plantilla de abajo como punto de partida.)")
+				out = append(out, "")
+			}
+		}
+	}
+
+	// ---- (2) Devolver la plantilla canónica ----
+	if action == "template" || action == "both" {
+		vars := scaffold.TemplateVars{
+			Package:           defaultString(args["package"], defaultPackage(name)),
+			AppPackage:        defaultString(args["app_package"], defaultPackage(name)),
+			RepositoryPackage: defaultString(args["repository_package"], defaultPackage(name)),
+			Name:              name,
+			Feature:           defaultString(args["feature"], strings.ToLower(name)),
+			UseCaseName:       defaultString(getStringArg(args, "use_case_name"), name),
+			UseCaseCamel:      strings.ToLower(name),
+			RepositoryName:    defaultString(args["repository_name"], name+"Repository"),
+			EntityName:        defaultString(args["entity_name"], name+"Entity"),
+			Table:             defaultString(args["table"], strings.ToLower(name)+"s"),
+			ReturnType:        defaultString(args["return_type"], "Unit"),
+		}
+		rendered := scaffold.RenderTemplate(spec.Template, vars)
+
+		out = append(out, fmt.Sprintf("📐 Plantilla canónica para %s (%s):", role, spec.DisplayName))
+		out = append(out, fmt.Sprintf("   FileNameHint: %s", spec.FileNameHint))
+		out = append(out, "```kotlin")
+		out = append(out, rendered)
+		out = append(out, "```")
+		out = append(out, "")
+		out = append(out, "📏 Reglas de validación que se aplicarán con validate_kotlin:")
+		for _, rule := range spec.Rules {
+			out = append(out, fmt.Sprintf("   - %s", rule.Description))
+		}
+		out = append(out, "")
+		out = append(out, "👉 Siguiente paso: rellena los TODO, llama write_file y luego validate_kotlin.")
+	}
+
+	return strings.Join(out, "\n"), nil
+}
+
+func (r *ToolRegistry) locateExisting(roleStr string, limit int) []semantic.FileLocation {
+	if r.semantic == nil {
+		// Sin índice semántico (Ollama caído o nunca corriste
+		// `androideai semantic index`): intentamos al menos un LIKE
+		// directo a la BD sobre el path.
+		if r.db == nil {
+			return nil
+		}
+		rows, err := r.db.Query(
+			`SELECT path, package, layer, '' FROM files
+			 WHERE LOWER(path) LIKE LOWER(?)
+			 ORDER BY path LIMIT ?`,
+			"%"+roleStr+"%", limit,
+		)
+		if err != nil {
+			return nil
+		}
+		defer rows.Close()
+		var out []semantic.FileLocation
+		for rows.Next() {
+			var l semantic.FileLocation
+			if err := rows.Scan(&l.Path, &l.Package, &l.Layer); err != nil {
+				continue
+			}
+			out = append(out, l)
+		}
+		return out
+	}
+
+	res, err := r.semantic.Locate(roleStr, limit)
+	if err != nil {
+		return nil
+	}
+	return res
+}
+
+func (r *ToolRegistry) validateKotlin(args map[string]interface{}) (string, error) {
+	path, _ := args["path"].(string)
+	roleStr, _ := args["role"].(string)
+	if path == "" || roleStr == "" {
+		return "", fmt.Errorf("path and role are required")
+	}
+	role := scaffold.Role(roleStr)
+	if !scaffold.IsValidRole(role) {
+		return "", fmt.Errorf("unknown role %q (supported: %s)", roleStr, strings.Join(rolesAsStrings(), ", "))
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("error reading %s: %w", path, err)
+	}
+
+	issues := scaffold.Validate(string(content), role)
+	var out []string
+	out = append(out, fmt.Sprintf("🔎 %s — %s", path, scaffold.Summary(issues)))
+	if len(issues) == 0 {
+		return strings.Join(out, "\n"), nil
+	}
+
+	for _, i := range issues {
+		marker := "✗"
+		if i.Severity == "warning" {
+			marker = "!"
+		}
+		loc := ""
+		if i.Line > 0 {
+			loc = fmt.Sprintf(" (line %d)", i.Line)
+		}
+		out = append(out, fmt.Sprintf("  %s [%s] %s%s", marker, i.Rule, i.Message, loc))
+	}
+	out = append(out, "")
+	out = append(out, "👉 Corrige los errores y vuelve a llamar validate_kotlin. Llama confirm_plan sólo cuando el resultado sea OK.")
+	return strings.Join(out, "\n"), nil
+}
+
+func defaultString(v interface{}, fallback string) string {
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return fallback
+}
+
+func getStringArg(args map[string]interface{}, key string) string {
+	if v, ok := args[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func defaultPackage(name string) string {
+	return "com.example.app.feature." + strings.ToLower(name)
+}
+
+func rolesAsStrings() []string {
+	out := make([]string, 0)
+	for _, r := range scaffold.AllRoles() {
+		out = append(out, string(r))
+	}
+	return out
 }
 
 // confirmPlan solicita al usuario que confirme un plan antes de ejecutarlo.

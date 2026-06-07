@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -279,6 +280,71 @@ var brainImportCmd = &cobra.Command{
 	},
 }
 
+var brainSeedFromSemanticCmd = &cobra.Command{
+	Use:   "seed-from-semantic",
+	Short: "Siembra el brain con convenciones detectadas en file_semantics",
+	Long: `Lee las clasificaciones de file_semantics (que produce 'androideai
+semantic index'), las agrupa por tipo de archivo (ViewModel, UseCase,
+Repository, Composable, ...) y guarda una entrada "convention" en el
+brain por cada rol.
+
+Por defecto es idempotente: si una entrada con el mismo título ya
+existe, se la salta. Con --force borra las entradas existentes con
+los títulos "<Role> convention" antes de re-sembrar, lo que permite
+regenerar el brain después de clasificar archivos nuevos o mejorar
+los prompts.
+
+Útil cuando:
+  - Querés re-sembrar el brain sin re-correr 'androideai init' entero.
+  - Clasificaste archivos nuevos con 'androideai semantic index' y
+    querés que el brain los vea.
+  - Cambiaste el aggregator o el formato de las entradas.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		force, _ := cmd.Flags().GetBool("force")
+
+		dbPath := filepath.Join(".androideai", "core.db")
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return fmt.Errorf("database not found, run 'androideai init' first")
+		}
+
+		s, err := store.NewStore(dbPath)
+		if err != nil {
+			return fmt.Errorf("error opening database: %w", err)
+		}
+		defer s.Close()
+
+		if force {
+			deleted, err := deleteConventionEntries(s.DB())
+			if err != nil {
+				return fmt.Errorf("error borrando convenciones existentes: %w", err)
+			}
+			if deleted > 0 {
+				fmt.Printf("  • Borradas %d entrada(s) existente(s) de tipo 'convention'.\n", deleted)
+			}
+		}
+
+		if err := seedBrainFromSemantic(); err != nil {
+			return fmt.Errorf("error sembrando brain: %w", err)
+		}
+		return nil
+	},
+}
+
+// deleteConventionEntries borra todas las entradas del brain con
+// type='convention'. Devuelve la cantidad borrada. Se usa por
+// `brain seed-from-semantic --force` para permitir regenerar.
+func deleteConventionEntries(db *sql.DB) (int, error) {
+	res, err := db.Exec(`DELETE FROM knowledge_entries WHERE type = 'convention'`)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 var brainListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Lista todas las entradas de conocimiento",
@@ -339,6 +405,10 @@ func init() {
 	brainSaveCmd.Flags().StringP("file-refs", "f", "", "File references")
 	brainSaveCmd.Flags().BoolP("yes", "y", false, "Skip confirmation")
 
+	// Seed-from-semantic flags
+	brainSeedFromSemanticCmd.Flags().BoolP("force", "f", false,
+		"Borra las entradas existentes de tipo 'convention' antes de re-sembrar")
+
 	// Add commands
 	brainCmd.AddCommand(brainSaveCmd)
 	brainCmd.AddCommand(brainSearchCmd)
@@ -347,6 +417,7 @@ func init() {
 	brainCmd.AddCommand(brainExportCmd)
 	brainCmd.AddCommand(brainImportCmd)
 	brainCmd.AddCommand(brainListCmd)
+	brainCmd.AddCommand(brainSeedFromSemanticCmd)
 }
 
 // Helper function to read input from terminal

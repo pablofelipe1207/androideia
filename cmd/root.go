@@ -45,6 +45,8 @@ func init() {
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(skillsCmd)
 	rootCmd.AddCommand(semanticCmd)
+	rootCmd.AddCommand(scaffoldCmd)
+	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(modelsCmd)

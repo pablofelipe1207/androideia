@@ -41,11 +41,9 @@ make build-full
 ## Quick Start
 
 ```bash
-# Initialize a project
+# Initialize a project (also runs index build, semantic index, and
+# seeds the brain with detected conventions — see "What init does").
 androideai init
-
-# Index your code
-androideai index build
 
 # Import official Android skills
 androideai skills import-android
@@ -285,15 +283,117 @@ androideai android test --unit
 
 ## Semantic Code Exploration
 
+The semantic module keeps **two complementary indexes** for every Android
+project:
+
+1. **Symbol embeddings** (the original behavior) — every Kotlin symbol
+   gets a vector so you can search code by meaning.
+2. **LLM file classification** — for every `.kt`/`.kts` file the LLM
+   produces a structured record with:
+   - `type` (`viewmodel`, `activity`, `composable`, `usecase`,
+     `repository`, `dao`, `di_module`, `nav_route`, `data_class`,
+     `entity`, `service`, `application`, `test`, `build`, `other`)
+   - `tags` (1-6 kebab-case keywords describing the feature/role)
+   - `architecture` (the project pattern the file hints at: `MVVM`,
+     `MVI`, `Clean`, `MVP`, `unknown`, ...)
+   - `conventions` (how files of that role are written in THIS project:
+     DI style, state holder, async pattern, etc.)
+   - `summary` (one-sentence purpose)
+
+The agent queries this index with the `semantic_locate` tool *before*
+creating any new file, so it never reinvents a pattern that already
+exists, and never collides with a class/module that the project
+already has.
+
 ```bash
-# Check semantic search status
+# Check the index status (classified files, architecture, top types)
 androideai semantic status
 
-# Index symbols for semantic search
+# Run both passes: LLM classification + symbol embeddings
 androideai semantic index
 
-# Search by meaning
+# Search code by meaning (embeddings)
 androideai semantic search "user authentication patterns"
+
+# Locate existing files — this is what the agent uses internally:
+androideai semantic locate viewmodel          # every ViewModel in the project
+androideai semantic locate usecase            # every UseCase
+androideai semantic locate repository         # every Repository / DAO
+androideai semantic locate di_module          # Hilt/Dagger modules
+androideai semantic locate LoginViewModel     # a specific file
+androideai semantic locate tag:auth           # any file tagged "auth"
+androideai semantic locate "state flow"       # free-text on conventions/summary
+
+# Show all matches (up to 200) and the project architecture summary
+androideai semantic locate viewmodel --all
+```
+
+The `locate` command prints for every match: path, package, layer,
+module, type, tags, detected architecture, summary and the
+"conventions" snippet so you can see at a glance how a given role is
+written in your project (e.g. "Hilt constructor injection, exposes
+StateFlow<UiState>, no Android dependencies").
+
+## What `androideai init` does
+
+`androideai init` is the one-shot bootstrap for a new project. In a
+single command it does, in order:
+
+1. Creates `.androideai/`, `.gitignore`, `config.yml` and the SQLite
+   database with the full schema.
+2. Runs `androideai index build` (parses every `.kt`/`.kts` and
+   populates `files`, `symbols`, the FTS index).
+3. Runs `androideai semantic index` — but only if Ollama is reachable.
+   It calls the LLM per file to classify it (ViewModel, Activity,
+   UseCase, Repository, ...) and stores tags, architecture and
+   conventions. If Ollama is down, this step is skipped with a warning
+   and the rest of init still succeeds.
+4. Aggregates the detected conventions by `type` and seeds the brain
+   with one `convention` entry per role (e.g. *ViewModel convention*,
+   *UseCase convention*, *Repository convention*). After this, the
+   agent can do `brain_search "viewmodel convention"` before creating a
+   new file and follow the project's actual style.
+
+Idempotent: re-running `init` is safe. The brain uses
+`SaveIfNotExists` keyed on the entry title, so existing convention
+entries are not duplicated; the message is "Las convenciones ya
+estaban en el brain; nada nuevo que añadir."
+
+Flags:
+
+```bash
+androideai init                   # full bootstrap (default)
+androideai init --no-index        # skip index build
+androideai init --no-semantic     # skip LLM classification + embeddings
+androideai init --no-brain-seed   # skip seeding the brain
+```
+
+Typical output (Ollama available):
+
+```
+Inicializando androideai-core...
+  ✓ Created .androideai/config.yml
+  ✓ Created .androideai/core.db with schema
+
+→ Construyendo índice de código...
+  Found 7 Kotlin files
+  ✓ Indexed 7 files
+
+→ Corriendo índice semántico (LLM classify + embeddings)...
+  Clasificados: 7   Fallidos: 0
+  Arquitectura detectada: MVVM
+  Embeddings nuevos: 19
+
+→ Sembrando brain con convenciones detectadas...
+  ✓ Composable convention (2 archivo(s) de muestra)
+  ✓ Di_module convention (1 archivo(s) de muestra)
+  ✓ Repository convention (1 archivo(s) de muestra)
+  ✓ Usecase convention (1 archivo(s) de muestra)
+  ✓ Viewmodel convention (1 archivo(s) de muestra)
+  5 nueva(s), 0 ya existente(s).
+  El agente ahora puede hacer brain_search "<rol> convention" antes de crear archivos.
+
+Initialization complete!
 ```
 
 ## Knowledge Base
@@ -313,6 +413,78 @@ androideai brain list
 # Export knowledge
 androideai brain export knowledge.md
 ```
+
+## Android Scaffold & Validate
+
+To make sure the agent never writes a "half" ViewModel (just a function
+with no UiState / UiEvent / UiEffect), a "pelado" Composable (no
+`hiltViewModel()`), or a Repository that imports `android.*`, the
+project ships with **canonical templates** and a **static validator**
+for every common Android component.
+
+The agent uses these through two tools:
+
+- `android_scaffold` — first checks the semantic index for existing
+  files of the role, then returns the canonical template filled with
+  the name/feature/package you pass. Roles: `viewmodel`, `composable`,
+  `activity`, `usecase`, `repository`, `dao`, `di_module`,
+  `data_class`, `entity`, `nav_route`.
+- `validate_kotlin` — runs the role's rules (regex/keyword checks) on
+  a file you just wrote and returns a list of errors / warnings. The
+  agent must call this AFTER `write_file` and BEFORE `confirm_plan`.
+
+The same templates and rules are exposed on the CLI for ad-hoc usage:
+
+```bash
+# List supported roles
+androideai scaffold list
+
+# Print a ViewModel template to stdout
+androideai scaffold viewmodel Login --feature login
+
+# Write the template straight to a file
+androideai scaffold viewmodel Login --feature login \
+    --package com.example.app.feature.login \
+    --output app/src/main/java/com/example/app/feature/login/LoginViewModel.kt
+
+# All other roles
+androideai scaffold composable Login   --output LoginScreen.kt
+androideai scaffold usecase    Login   --output LoginUseCase.kt
+androideai scaffold repository User    --output UserRepository.kt
+androideai scaffold dao        User    --output UserDao.kt --table users
+androideai scaffold di_module  Auth    --output AuthModule.kt
+androideai scaffold data_class User    --output User.kt
+androideai scaffold entity     User    --output UserEntity.kt --table users
+androideai scaffold nav_route  Auth    --output AuthRoutes.kt
+androideai scaffold activity   Main    --output MainActivity.kt
+
+# Validate a file (exit code 0 = OK, 1 = errors)
+androideai validate app/src/main/java/.../LoginViewModel.kt viewmodel
+```
+
+### What the validator checks (per role)
+
+| Role           | Hard requirements                                                                                |
+|----------------|---------------------------------------------------------------------------------------------------|
+| `viewmodel`    | `@HiltViewModel`, extends `ViewModel()`, `@Inject constructor`, nested `UiState`, `UiEvent`, `UiEffect`, public `val state: StateFlow<UiState>`, `val effects: Flow<UiEffect>`, `fun onEvent(event: UiEvent)`, **no** `LiveData` |
+| `composable`   | `@Composable`, name ends in `Screen`, uses `hiltViewModel()`, `collectAsStateWithLifecycle()`, calls `viewModel.onEvent(` |
+| `activity`     | extends `ComponentActivity`/`AppCompatActivity`, `setContent {`, wrapped in `AppTheme`/`MaterialTheme`, `@AndroidEntryPoint` |
+| `usecase`      | `suspend operator fun invoke(`, `@Inject constructor`, returns `Result<…>` or `Flow<…>` |
+| `repository`   | `interface …Repository` + `class …RepositoryImpl : …Repository`, **no** `import android.*`, methods are `suspend` or return `Flow<…>` |
+| `dao`          | `@Dao`, `interface`, methods `suspend` or `Flow<…>` |
+| `di_module`    | `@Module`, `@InstallIn(XxxComponent::class)`, at least one `@Provides` / `@Binds` |
+| `data_class`   | `data class`, primary-constructor params are `val` |
+| `entity`       | `@Entity`, `@PrimaryKey` |
+| `nav_route`    | `object …Routes` or `sealed class …Routes`, at least one `const val` route string |
+
+The agent's mandatory workflow per new file is:
+
+1. `android_scaffold action=check role=viewmodel name=Login` → reads an
+   existing project ViewModel with `read_file` if one is found.
+2. `android_scaffold action=template role=viewmodel name=Login feature=login` → fills the template's `// TODO:` blocks.
+3. `write_file path=…` → writes the file.
+4. `validate_kotlin path=… role=viewmodel` → iterates until OK.
+5. Only then does the agent call `confirm_plan`.
 
 ## Configuration
 

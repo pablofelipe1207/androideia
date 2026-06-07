@@ -9,6 +9,17 @@ import (
 	"github.com/pablofelipe1207/androideia/internal/store"
 )
 
+func newTestBrain(t *testing.T) *Brain {
+	t.Helper()
+	tmp := t.TempDir()
+	s, err := store.NewStore(filepath.Join(tmp, "test.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return NewBrain(s.DB())
+}
+
 func TestNewBrain(t *testing.T) {
 	// Create a temporary database
 	tmpDir, err := os.MkdirTemp("", "brain-test")
@@ -294,4 +305,71 @@ func containsString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestSaveIfNotExists_InsertsNew(t *testing.T) {
+	b := newTestBrain(t)
+	id, created, err := b.SaveIfNotExists(&KnowledgeEntry{
+		Type:    "convention",
+		Title:   "ViewModel convention",
+		Content: "Hilt + StateFlow",
+		Tags:    "viewmodel,mvvm",
+		Status:  "promoted",
+	})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !created {
+		t.Error("expected created=true on first save")
+	}
+	if id == 0 {
+		t.Error("expected non-zero id")
+	}
+}
+
+func TestSaveIfNotExists_SkipsDuplicate(t *testing.T) {
+	b := newTestBrain(t)
+	first, created1, err := b.SaveIfNotExists(&KnowledgeEntry{
+		Type: "convention", Title: "ViewModel convention",
+		Content: "first", Status: "promoted",
+	})
+	if err != nil || !created1 {
+		t.Fatalf("first save: created=%v err=%v", created1, err)
+	}
+
+	second, created2, err := b.SaveIfNotExists(&KnowledgeEntry{
+		Type: "convention", Title: "ViewModel convention",
+		Content: "second (should not overwrite)", Status: "promoted",
+	})
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if created2 {
+		t.Error("expected created=false on duplicate title")
+	}
+	if second != first {
+		t.Errorf("expected same id (%d), got %d", first, second)
+	}
+
+	// Verify the first content is still in the DB.
+	entries, _ := b.List()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Content != "first" {
+		t.Errorf("content was overwritten: %q", entries[0].Content)
+	}
+}
+
+func TestSaveIfNotExists_DifferentTitles(t *testing.T) {
+	b := newTestBrain(t)
+	_, c1, _ := b.SaveIfNotExists(&KnowledgeEntry{Type: "convention", Title: "ViewModel convention", Content: "a"})
+	_, c2, _ := b.SaveIfNotExists(&KnowledgeEntry{Type: "convention", Title: "UseCase convention", Content: "b"})
+	if !c1 || !c2 {
+		t.Errorf("both should be created: c1=%v c2=%v", c1, c2)
+	}
+	entries, _ := b.List()
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(entries))
+	}
 }
