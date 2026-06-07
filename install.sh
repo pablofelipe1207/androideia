@@ -350,6 +350,41 @@ install_from_source() {
     echo "Binary installed to: $INSTALL_DIR/$BINARY"
 }
 
+# Check and install Ollama (macOS) and pull a lightweight model
+install_ollama() {
+    echo ""
+    echo "Checking Ollama..."
+
+    if command_exists ollama; then
+        echo "✅ Ollama found: $(which ollama)"
+    else
+        echo "Ollama not found."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            echo "Installing Ollama via Homebrew..."
+            if ! command_exists brew; then
+                echo "Installing Homebrew first..."
+                /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            fi
+            brew install ollama
+        else
+            echo "⚠️  Please install Ollama manually from https://ollama.com"
+            return
+        fi
+    fi
+
+    # Ensure ollama is running
+    if ! pgrep -x ollama > /dev/null 2>&1; then
+        echo "Starting Ollama server..."
+        ollama serve &
+        sleep 3
+    fi
+
+    # Pull lightweight model for semantic/embeddings
+    echo "Pulling qwen2.5:1.5b (lightweight)..."
+    ollama pull qwen2.5:1.5b
+    echo "✅ qwen2.5:1.5b ready"
+}
+
 # Create the global config file with defaults so the user can edit the model
 # (and other settings) without re-running the installer.
 install_global_config() {
@@ -366,7 +401,7 @@ install_global_config() {
 # Prefer editing models.yml para configurar providers y modelos.
 # Este archivo se mantiene por compat: contiene approval, timeout y
 # un fallback de los campos de modelo (sync automático desde models.yml).
-model: qwen3-coder-64k-32k:latest
+model: qwen2.5:1.5b
 ollama_url: http://localhost:11434
 provider: ollama
 approval: ask
@@ -384,11 +419,11 @@ EOF
 # Defaults: agent con OpenCode Zen (free, sin key) y semantic con Ollama local.
 agent:
   provider: opencode_zen
-  model: minimax-m3-free
+  model: mimo-v2.5-free
 semantic:
   provider: ollama
   base_url: http://localhost:11434
-  chat_model: qwen2.5-coder:7b
+  chat_model: qwen2.5:1.5b
   embedding_model: nomic-embed-text
 EOF
         echo "Created global models config: $MODELS_CONFIG"
@@ -447,6 +482,7 @@ main() {
         install)
             detect_platform
             install
+            install_ollama
             install_global_config
             check_android_sdk
             print_summary
@@ -457,6 +493,7 @@ main() {
         from-source)
             detect_platform
             install_from_source
+            install_ollama
             install_global_config
             check_android_sdk
             print_summary
