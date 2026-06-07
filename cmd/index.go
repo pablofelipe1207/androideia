@@ -5,9 +5,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/pablofelipe1207/androideia/internal/config"
 	"github.com/pablofelipe1207/androideia/internal/index"
+	"github.com/pablofelipe1207/androideia/internal/semantic"
 	"github.com/pablofelipe1207/androideia/internal/store"
 	"github.com/spf13/cobra"
+)
+
+var (
+	indexUseLLM bool
 )
 
 var indexCmd = &cobra.Command{
@@ -51,7 +57,7 @@ var indexBuildCmd = &cobra.Command{
 		// Use tree-sitter parser for better accuracy
 		extractor := index.NewTreeSitterExtractor()
 		fmt.Println("Using tree-sitter parser for precise symbol extraction")
-		
+
 		for _, file := range files {
 			content, err := os.ReadFile(file.Path)
 			if err != nil {
@@ -79,8 +85,8 @@ var indexBuildCmd = &cobra.Command{
 
 			// Extract symbols
 			symbols := extractor.ExtractSymbols(file.Path, string(content))
-			
-			// Auto-infer feature name from symbols and tag them
+
+			// Auto-infer feature name from symbols and tag them (heuristic fallback)
 			featureName := extractor.ExtractFeature(symbols)
 			if featureName != "" {
 				for i := range symbols {
@@ -110,6 +116,48 @@ var indexBuildCmd = &cobra.Command{
 			fmt.Printf("Indexed %s: %d symbols (feature: %s)\n", file.Path, len(symbols), featureName)
 		}
 
+		// Optional: LLM-based feature discovery (Ollama)
+		if indexUseLLM {
+			fmt.Println("Running LLM-based feature discovery...")
+			mc, _, err := config.LoadModelsConfig()
+			if err == nil && mc.Semantic.Provider == "ollama" {
+				cfg, _ := config.LoadConfig()
+				baseURL := mc.Semantic.BaseURL
+				if baseURL == "" {
+					baseURL = "http://localhost:11434"
+				}
+				model := mc.Semantic.ChatModel
+				if model == "" {
+					model = cfg.EffectiveOllamaModel()
+				}
+
+				sem := semantic.NewSemantic(s.DB(), baseURL, model)
+				if sem.IsAvailable() {
+					fileToFeature, err := sem.DiscoverFeatures()
+					if err != nil {
+						fmt.Printf("Warning: LLM feature discovery failed: %v\n", err)
+					} else {
+						tagged, err := sem.TagSymbolsWithFeatures(fileToFeature)
+						if err != nil {
+							fmt.Printf("Warning: Failed to tag features: %v\n", err)
+						} else {
+							fmt.Printf("LLM feature discovery: tagged %d symbols across %d files\n", tagged, len(fileToFeature))
+							// Print discovered features
+							features := make(map[string]bool)
+							for _, f := range fileToFeature {
+								features[f] = true
+							}
+							for feat := range features {
+								fmt.Printf("  Discovered feature: %s\n", feat)
+							}
+						}
+					}
+				} else {
+					fmt.Println("  Ollama not available, skipping LLM feature discovery")
+				}
+			}
+		}
+
 		fmt.Println("Index build complete!")
 		return nil
 	},
@@ -126,6 +174,7 @@ var indexRefreshCmd = &cobra.Command{
 }
 
 func init() {
+	indexBuildCmd.Flags().BoolVar(&indexUseLLM, "use-llm", false, "Usar Ollama para descubrimiento inteligente de features")
 	indexCmd.AddCommand(indexBuildCmd)
 	indexCmd.AddCommand(indexRefreshCmd)
 }

@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	initNoIndex     bool
-	initNoSemantic  bool
-	initNoBrainSeed bool
+	initNoIndex         bool
+	initNoSemantic      bool
+	initNoBrainSeed     bool
+	initNoLLMFeatures   bool
 )
 
 var initCmd = &cobra.Command{
@@ -26,18 +27,20 @@ var initCmd = &cobra.Command{
 de datos del proyecto. Por defecto, además:
 
   1. Construye el índice de código (androideai index build).
-  2. Si Ollama está disponible, corre la clasificación LLM de
+  2. Si Ollama está disponible, descubre features con LLM (androideai index build --use-llm).
+  3. Si Ollama está disponible, corre la clasificación LLM de
      archivos + embeddings (androideai semantic index).
-  3. Si la clasificación produjo convenciones, las guarda en el brain
+  4. Si la clasificación produjo convenciones, las guarda en el brain
      como entradas tipo "convention" para que el agente las use
      (brain_search "ViewModel convention", etc.).
 
 Flags:
-  --no-index       Salta la construcción del índice de código.
-  --no-semantic    Salta la clasificación LLM y los embeddings.
-  --no-brain-seed  No siembra el brain con las convenciones detectadas.
+  --no-index         Salta la construcción del índice de código.
+  --no-semantic      Salta la clasificación LLM y los embeddings.
+  --no-llm-features  Salta el descubrimiento de features con LLM.
+  --no-brain-seed    No siembra el brain con las convenciones detectadas.
 
-Si Ollama no está disponible, el paso de semantic se omite
+Si Ollama no está disponible, los pasos de LLM se omiten
 silenciosamente (con un aviso) y el resto del init sigue.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("Inicializando androideai-core...")
@@ -115,7 +118,20 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 		}
 
 		// ------------------------------------------------------------
-		// 3) Semántica (LLM classify + embeddings)
+		// 3) Descubrimiento de features con LLM (index build --use-llm)
+		// ------------------------------------------------------------
+		if !initNoLLMFeatures {
+			fmt.Println()
+			fmt.Println("→ Descubriendo features con LLM (Ollama)...")
+			if err := runLLMFeatureDiscoverySilently(); err != nil {
+				fmt.Printf("  ⚠️  LLM feature discovery falló: %v\n", err)
+			}
+		} else {
+			fmt.Println("→ Saltando LLM feature discovery (--no-llm-features)")
+		}
+
+		// ------------------------------------------------------------
+		// 4) Semántica (LLM classify + embeddings)
 		// ------------------------------------------------------------
 		classifiedSomething := false
 		if !initNoSemantic {
@@ -174,6 +190,30 @@ func runIndexBuildSilently() error {
 		}
 		_ = s.Close()
 	}
+	return indexBuildCmd.RunE(indexBuildCmd, nil)
+}
+
+// runLLMFeatureDiscoverySilently invoca el descubrimiento de features
+// con LLM usando el comando `index build --use-llm`.
+func runLLMFeatureDiscoverySilently() error {
+	// Cargar config para verificar Ollama
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if cfg.Provider == "ollama" {
+		if _, _, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.EffectiveOllamaModel()); err != nil {
+			fmt.Printf("  ⚠️  Ollama no disponible en %s; se omite descubrimiento de features.\n", cfg.OllamaURL)
+			return nil
+		}
+	}
+
+	// Usar indexBuildCmd con la flag --use-llm
+	// Temporalmente activamos la flag
+	oldUseLLM := indexUseLLM
+	indexUseLLM = true
+	defer func() { indexUseLLM = oldUseLLM }()
+
 	return indexBuildCmd.RunE(indexBuildCmd, nil)
 }
 
@@ -294,5 +334,6 @@ func seedBrainFromSemantic() error {
 func init() {
 	initCmd.Flags().BoolVar(&initNoIndex, "no-index", false, "Saltar la construcción del índice de código")
 	initCmd.Flags().BoolVar(&initNoSemantic, "no-semantic", false, "Saltar la clasificación LLM y los embeddings")
+	initCmd.Flags().BoolVar(&initNoLLMFeatures, "no-llm-features", false, "Saltar el descubrimiento de features con LLM")
 	initCmd.Flags().BoolVar(&initNoBrainSeed, "no-brain-seed", false, "No sembrar el brain con las convenciones detectadas")
 }

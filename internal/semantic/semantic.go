@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -301,6 +302,148 @@ func (s *Semantic) IndexAll() (int, error) {
 		}
 
 		count++
+	}
+
+	return count, nil
+}
+
+// FeatureInfo representa la información de una feature detectada
+type FeatureInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Files       []string `json:"files"`
+}
+
+// DiscoverFeatures usa Ollama para analizar el código y descubrir
+// features del proyecto. Agrupa archivos/símbolos en features coherentes.
+func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
+	// Obtener todos los archivos con sus símbolos
+	rows, err := s.db.Query(`
+		SELECT f.path, f.package, f.module, f.layer,
+		       GROUP_CONCAT(s.name || ':' || s.kind, ';') as symbols
+		FROM files f
+		LEFT JOIN symbols s ON s.file_id = f.id
+		GROUP BY f.id, f.path, f.package, f.module, f.layer
+		ORDER BY f.path
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("error querying files: %w", err)
+	}
+	defer rows.Close()
+
+	type FileInfo struct {
+		Path    string
+		Package string
+		Module  string
+		Layer   string
+		Symbols string
+	}
+
+	var files []FileInfo
+	for rows.Next() {
+		var fi FileInfo
+		if err := rows.Scan(&fi.Path, &fi.Package, &fi.Module, &fi.Layer, &fi.Symbols); err != nil {
+			return nil, fmt.Errorf("error scanning file: %w", err)
+		}
+		files = append(files, fi)
+	}
+
+	if len(files) == 0 {
+		return nil, nil
+	}
+
+	// Construir prompt para Ollama
+	var prompt strings.Builder
+	prompt.WriteString("Analiza este proyecto Android y agrupa los archivos en features (funcionalidades).\n")
+	prompt.WriteString("Devuelve SOLO JSON válido con este formato:\n")
+	prompt.WriteString(`{"features": [{"name": "login", "description": "Autenticación de usuarios", "files": ["app/src/main/java/.../LoginScreen.kt", "app/src/main/java/.../LoginViewModel.kt"]}]}\n\n`)
+	prompt.WriteString("Archivos y símbolos:\n\n")
+
+	for _, fi := range files {
+		prompt.WriteString(fmt.Sprintf("Archivo: %s\n", fi.Path))
+		prompt.WriteString(fmt.Sprintf("  Paquete: %s\n", fi.Package))
+		prompt.WriteString(fmt.Sprintf("  Módulo: %s\n", fi.Module))
+		prompt.WriteString(fmt.Sprintf("  Capa: %s\n", fi.Layer))
+		if fi.Symbols != "" {
+			prompt.WriteString(fmt.Sprintf("  Símbolos: %s\n", fi.Symbols))
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Llamar a Ollama chat API
+	request := map[string]interface{}{
+		"model":  s.model,
+		"prompt": prompt.String(),
+		"stream": false,
+		"format": "json",
+	}
+
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling request: %w", err)
+	}
+
+	resp, err := s.client.Post(s.ollamaURL+"/api/generate", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("error calling Ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Ollama returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parsear respuesta (Ollama devuelve JSON por líneas en streaming, pero con stream=false es un solo JSON)
+	var ollamaResp struct {
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal(body, &ollamaResp); err != nil {
+		return nil, fmt.Errorf("error unmarshaling Ollama response: %w", err)
+	}
+
+	// Parsear el JSON de la respuesta
+	var result struct {
+		Features []FeatureInfo `json:"features"`
+	}
+	if err := json.Unmarshal([]byte(ollamaResp.Response), &result); err != nil {
+		return nil, fmt.Errorf("error parsing features JSON: %w", err)
+	}
+
+	// Construir mapa archivo -> feature
+	fileToFeature := make(map[string]string)
+	for _, feat := range result.Features {
+		for _, file := range feat.Files {
+			fileToFeature[file] = feat.Name
+		}
+	}
+
+	return fileToFeature, nil
+}
+
+// TagSymbolsWithFeatures etiqueta los símbolos con sus features usando
+// el descubrimiento LLM. Devuelve el número de símbolos etiquetados.
+func (s *Semantic) TagSymbolsWithFeatures(fileToFeature map[string]string) (int, error) {
+	if len(fileToFeature) == 0 {
+		return 0, nil
+	}
+
+	count := 0
+	for filePath, featureName := range fileToFeature {
+		result, err := s.db.Exec(`
+			UPDATE symbols
+			SET feature = ?
+			WHERE file_id IN (SELECT id FROM files WHERE path = ?)
+		`, featureName, filePath)
+		if err != nil {
+			continue
+		}
+		affected, _ := result.RowsAffected()
+		count += int(affected)
 	}
 
 	return count, nil
