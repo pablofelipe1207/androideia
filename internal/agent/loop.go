@@ -40,7 +40,7 @@ type TaskStats struct {
 func NewAgent(llmProvider llm.Provider, db *sql.DB, cfg *config.Config) *Agent {
 	return &Agent{
 		llm:   llmProvider,
-		tools: NewToolRegistry(db),
+		tools: NewToolRegistryWithConfig(db, cfg),
 		db:    db,
 		config: cfg,
 		messages: []llm.Message{

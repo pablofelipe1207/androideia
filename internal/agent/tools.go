@@ -21,24 +21,34 @@ import (
 )
 
 type ToolRegistry struct {
-	tools   []llm.Tool
-	db      *sql.DB
-	android *android.Android
+	tools    []llm.Tool
+	db       *sql.DB
+	android  *android.Android
 	semantic *semantic.Semantic
+	approval string
 }
 
 func NewToolRegistry(db *sql.DB) *ToolRegistry {
 	cfg, _ := config.LoadConfig()
-	
+	return NewToolRegistryWithConfig(db, cfg)
+}
+
+func NewToolRegistryWithConfig(db *sql.DB, cfg *config.Config) *ToolRegistry {
 	var sem *semantic.Semantic
 	if cfg != nil {
 		sem = semantic.NewSemantic(db, cfg.OllamaURL, cfg.EffectiveOllamaModel())
 	}
 	
+	approval := "ask"
+	if cfg != nil {
+		approval = cfg.Approval
+	}
+	
 	registry := &ToolRegistry{
-		db:      db,
-		android: android.NewAndroid(db),
+		db:       db,
+		android:  android.NewAndroid(db),
 		semantic: sem,
+		approval: approval,
 	}
 	registry.registerDefaultTools()
 	return registry
@@ -982,6 +992,10 @@ func rolesAsStrings() []string {
 //   - "denied" si el usuario rechaza
 //   - "edit:<nuevo plan>" si el usuario quiere ajustar
 func (r *ToolRegistry) confirmPlan(args map[string]interface{}) (string, error) {
+	if r.approval == "auto" {
+		return "approved", nil
+	}
+
 	plan, _ := args["plan"].(string)
 	if plan == "" {
 		return "", fmt.Errorf("plan is required")
@@ -1012,7 +1026,6 @@ func (r *ToolRegistry) confirmPlan(args map[string]interface{}) (string, error) 
 		}
 		return "edit:" + newPlan, nil
 	default:
-		// Cualquier otro input se trata como feedback libre y se aprueba con la nota.
 		if response == "" {
 			return "denied", nil
 		}
@@ -1025,6 +1038,10 @@ func (r *ToolRegistry) askUser(args map[string]interface{}) (string, error) {
 	question, _ := args["question"].(string)
 	if question == "" {
 		return "", fmt.Errorf("question is required")
+	}
+
+	if r.approval == "auto" {
+		return "", nil
 	}
 
 	fmt.Println()

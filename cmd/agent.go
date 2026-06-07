@@ -20,6 +20,7 @@ var (
 	agentResumeID int64
 	agentSession  string
 	agentTimeout  int
+	agentYes      bool
 )
 
 var agentCmd = &cobra.Command{
@@ -41,6 +42,11 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("error loading config: %w", err)
+		}
+
+		if agentYes {
+			cfg.Approval = "auto"
+			fmt.Println("Auto-approval mode: --yes enabled")
 		}
 
 		// Load NEW models config (con migración automática desde
@@ -208,4 +214,5 @@ func init() {
 	agentCmd.Flags().Int64Var(&agentResumeID, "resume", 0, "Reanuda una conversación persistida por ID")
 	agentCmd.Flags().StringVar(&agentSession, "session", "", "Nombre opcional para la sesión (sólo metadata)")
 	agentCmd.Flags().IntVar(&agentTimeout, "timeout", 0, "Timeout por llamada al LLM en segundos (default: config o 300). Súbelo si tu modelo es lento o el contexto es largo.")
+	agentCmd.Flags().BoolVarP(&agentYes, "yes", "y", false, "Auto-aprobar todas las operaciones (modo desatendido / CI). Omite confirmaciones de planes y escrituras.")
 }
