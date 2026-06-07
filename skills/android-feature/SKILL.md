@@ -50,11 +50,28 @@ feature/
 - Si una feature requiere cambios en un archivo existente (ej. agregar una ruta al NavHost),
   **lee el archivo primero** y **agrega** el nuevo código sin eliminar el existente.
 - Si MainActivity ya tiene `setContent { ... }` con contenido, **no lo reemplaces**.
-  Agrega imports y código nuevo sin tocar el bloque existente.
+  Agrega imports y código nuevo sin tocando el bloque existente.
 - Prefiere crear un nuevo archivo (ej. `NuevoFeatureScreen.kt`) a modificar uno existente
   que ya funciona.
 - Excepción: solo cuando el usuario diga explícitamente "reemplaza este archivo" o
   "sobrescribe este archivo". En ese caso, confirma con `confirm_plan` primero.
+
+## Regla crítica — Consistencia de diseño
+
+- **Features existentes**: **NUNCA** cambies el diseño visual, UI/UX, temas, colores,
+  tipografía o estructura de navegación de features que ya existen. Su diseño es
+  inmutable a menos que el usuario pida explícitamente un rediseño.
+- **Nuevas features/pantallas**: **DEBES** seguir el diseño de las pantallas existentes.
+  Antes de crear una nueva Screen, usa `androideai feature <existente>` o
+  `semantic_locate type=composable` para inspeccionar pantallas actuales y copia:
+  - Estructura de Composables (Column, LazyColumn, Scaffold, etc.)
+  - Uso de `MaterialTheme`, `colors`, `typography`, `shapes`
+  - Espaciado, padding, márgenes (usa `Spacing`, `Dimens` del tema)
+  - Estilo de botones, inputs, tarjetas, barras de navegación
+  - Patrones de estado (Loading, Error, Empty, Success)
+  - Animaciones y transiciones si las hay
+- Si no hay pantallas previas, usa la plantilla canónica de `android_scaffold`
+  con `action=template role=composable` y valida con `validate_kotlin`.
 
 ## Ejemplo de creación
 

@@ -247,3 +247,19 @@ func (e *TreeSitterExtractor) InferLayer(filePath string, content string) string
 
 	return "ui"
 }
+
+func (e *TreeSitterExtractor) ExtractFeature(symbols []Symbol) string {
+	for _, sym := range symbols {
+		if sym.Kind == "screen" || sym.Kind == "composable" {
+			name := sym.Name
+			if strings.HasSuffix(name, "Screen") {
+				name = strings.TrimSuffix(name, "Screen")
+			}
+			if strings.HasSuffix(name, "Composable") {
+				name = strings.TrimSuffix(name, "Composable")
+			}
+			return strings.ToLower(name)
+		}
+	}
+	return ""
+}

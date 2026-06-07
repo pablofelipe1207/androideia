@@ -79,6 +79,15 @@ var indexBuildCmd = &cobra.Command{
 
 			// Extract symbols
 			symbols := extractor.ExtractSymbols(file.Path, string(content))
+			
+			// Auto-infer feature name from symbols and tag them
+			featureName := extractor.ExtractFeature(symbols)
+			if featureName != "" {
+				for i := range symbols {
+					symbols[i].Feature = featureName
+				}
+			}
+
 			for _, sym := range symbols {
 				_, err := s.DB().Exec(
 					"INSERT INTO symbols (file_id, name, kind, signature, line, feature) VALUES (?, ?, ?, ?, ?, ?)",
@@ -98,7 +107,7 @@ var indexBuildCmd = &cobra.Command{
 				}
 			}
 
-			fmt.Printf("Indexed %s: %d symbols\n", file.Path, len(symbols))
+			fmt.Printf("Indexed %s: %d symbols (feature: %s)\n", file.Path, len(symbols), featureName)
 		}
 
 		fmt.Println("Index build complete!")

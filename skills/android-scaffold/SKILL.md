@@ -80,3 +80,10 @@ Room, nav route) salga completo, no a medias.
 - **NUNCA SOBRESCRIBAS código existente**. Cuando crees archivos nuevos,
   no toques los existentes a menos que la tarea lo exija explícitamente.
   Preserva siempre el contenido original y agrega junto a él.
+- **CONSISTENCIA DE DISEÑO — OBLIGATORIA**:
+  - Features existentes: **NO** cambies su diseño visual, temas, colores,
+    tipografía, espaciado, componentes ni navegación.
+  - Nuevas pantallas: **DEBES** inspeccionar pantallas existentes con
+    `semantic_locate type=composable` o `android_scaffold role=composable action=check`
+    y replicar su estilo (MaterialTheme, Spacing, Dimens, patrones de estado,
+    botones, inputs, cards, navegación, animaciones).

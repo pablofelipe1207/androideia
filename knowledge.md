@@ -26,3 +26,21 @@ When adding new features, NEVER overwrite or delete existing code in files like 
 
 ---
 
+## Design consistency — existing vs new features
+
+**Type:** rule  
+**Status:** promoted  
+**Created:** 2026-06-07  
+
+**Tags:** design,consistency,ui,ux  
+
+- **Existing features**: Their visual design, UI/UX, themes, colors, typography, spacing, navigation and component styles are IMMUTABLE. Do NOT change them unless user explicitly requests a redesign.
+- **New features/screens**: MUST follow the design system of existing screens. Before creating a new Composable Screen, inspect existing screens with `semantic_locate type=composable` or `android_scaffold role=composable action=check` and replicate:
+  - MaterialTheme usage (colors, typography, shapes)
+  - Spacing/Dimens system
+  - Component patterns (buttons, inputs, cards, navigation bars)
+  - State patterns (Loading, Error, Empty, Success)
+  - Animations/transitions
+  - Layout structure (Scaffold, Column, LazyColumn, etc.)
+---
+
