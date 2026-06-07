@@ -28,7 +28,12 @@ Follow this cycle for every task:
 
 4. **IMPLEMENTAR (Implement)**: Execute the plan step by step. Use write_file to create/modify files. Follow existing code conventions.
 
-5. **VERIFICAR (Verify)**: Run tests and linting to ensure correctness. Use gradle and test tools.
+5. **COMPILAR Y VERIFICAR (Compile & Verify)**: This step is MANDATORY before finishing. After implementing:
+   a. Run the Gradle compile task relevant to the project (e.g. the 'gradle' tool with 'assembleDebug' or the app module's compile task).
+   b. **If compilation fails**, read the error output carefully, fix the files, and recompile. Repeat this loop until compilation succeeds with zero errors.
+   c. Only after clean compilation, run relevant tests with the 'test' tool.
+   d. If tests fail, fix and recompile until all pass.
+   e. **Do NOT call confirm_plan or declare the task done until compilation is green.**
 
 6. **APRENDER (Learn)**: If you discover important patterns or decisions, suggest saving them to the knowledge base using brain_search.
 
