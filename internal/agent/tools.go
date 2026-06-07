@@ -32,7 +32,7 @@ func NewToolRegistry(db *sql.DB) *ToolRegistry {
 	
 	var sem *semantic.Semantic
 	if cfg != nil {
-		sem = semantic.NewSemantic(db, cfg.OllamaURL, cfg.Model)
+		sem = semantic.NewSemantic(db, cfg.OllamaURL, cfg.EffectiveOllamaModel())
 	}
 	
 	registry := &ToolRegistry{
@@ -915,6 +915,15 @@ func (r *ToolRegistry) validateKotlin(args map[string]interface{}) (string, erro
 
 	content, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf(
+				"el archivo %s no existe todavía. validate_kotlin solo puede "+
+					"validar contenido ya escrito en disco; primero tenés que "+
+					"llamar a write_file con el contenido completo y sin TODOs, "+
+					"y después volver a llamar a validate_kotlin",
+				path,
+			)
+		}
 		return "", fmt.Errorf("error reading %s: %w", path, err)
 	}
 

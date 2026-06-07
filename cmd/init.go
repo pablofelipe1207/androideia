@@ -171,7 +171,7 @@ func runSemanticIndexSilently() (bool, error) {
 		return false, fmt.Errorf("load config: %w", err)
 	}
 	if cfg.Provider == "ollama" {
-		if _, _, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model); err != nil {
+		if _, _, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.EffectiveOllamaModel()); err != nil {
 			// No Ollama / no modelos: avisamos y seguimos sin
 			// fallar el init.
 			fmt.Printf("  ⚠️  Ollama no disponible en %s; se omite la clasificación LLM.\n", cfg.OllamaURL)
@@ -224,11 +224,11 @@ func seedBrainFromSemantic() error {
 		return err
 	}
 	if cfg.Provider == "ollama" {
-		if resolved, _, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model); err == nil {
-			cfg.Model = resolved
+		if resolved, _, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.EffectiveOllamaModel()); err == nil {
+			cfg.OllamaModel = resolved
 		}
 	}
-	sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
+	sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
 
 	aggregates, err := sem.AggregateConventions()
 	if err != nil {

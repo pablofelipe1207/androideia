@@ -122,12 +122,14 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 		return cfg.Model, nil
 	case "ollama_url", "ollama-url":
 		return cfg.OllamaURL, nil
+	case "ollama_model", "ollama-model":
+		return cfg.OllamaModel, nil
 	case "provider":
 		return cfg.Provider, nil
 	case "approval":
 		return cfg.Approval, nil
 	default:
-		return "", fmt.Errorf("clave desconocida: %q (usa: model, ollama_url, provider, approval)", key)
+		return "", fmt.Errorf("clave desconocida: %q (usa: model, ollama_url, ollama_model, provider, approval)", key)
 	}
 }
 
@@ -143,12 +145,16 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 			return fmt.Errorf("la URL no puede estar vacía")
 		}
 		cfg.OllamaURL = value
+	case "ollama_model", "ollama-model":
+		// Vacío significa "volver al comportamiento por defecto"
+		// (cae a cfg.Model).
+		cfg.OllamaModel = value
 	case "provider":
 		switch value {
-		case "ollama", "anthropic", "openai":
+		case "ollama", "anthropic", "openai", "opencode_zen":
 			cfg.Provider = value
 		default:
-			return fmt.Errorf("provider inválido: %q (usa: ollama, anthropic, openai)", value)
+			return fmt.Errorf("provider inválido: %q (usa: ollama, anthropic, openai, opencode_zen)", value)
 		}
 	case "approval":
 		switch value {

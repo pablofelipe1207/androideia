@@ -197,3 +197,96 @@ func TestLoadConfig_GlobalAndProjectMerge(t *testing.T) {
 		t.Errorf("Expected global provider 'ollama', got '%s'", loaded.Provider)
 	}
 }
+
+func TestEffectiveOllamaModel(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		ollamaModel string
+		want        string
+	}{
+		{
+			name:        "ollama_model configured wins",
+			model:       "minimax-m3-free", // agente usa Zen
+			ollamaModel: "qwen2.5-coder:7b", // clasificación+embeddings usan Ollama
+			want:        "qwen2.5-coder:7b",
+		},
+		{
+			name:        "ollama_model empty falls back to model",
+			model:       "qwen3-coder:latest",
+			ollamaModel: "",
+			want:        "qwen3-coder:latest",
+		},
+		{
+			name:        "both empty falls back to empty model",
+			model:       "",
+			ollamaModel: "",
+			want:        "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{Model: tc.model, OllamaModel: tc.ollamaModel}
+			if got := c.EffectiveOllamaModel(); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfig_LoadsOllamaModel(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config-ollama-model-test")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// LoadConfig lee ~/.androideai; apuntamos HOME a un dir vacío
+	// para que no se cargue nada global.
+	tmpHome, err := os.MkdirTemp("", "config-home-test")
+	if err != nil {
+		t.Fatalf("home tempdir: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", originalHome)
+
+	originalDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(originalDir)
+
+	// Sin ~/.androideai ni .androideai: solo defaults
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.OllamaModel != "" {
+		t.Errorf("default OllamaModel = %q, want empty", cfg.OllamaModel)
+	}
+
+	// Config explícito
+	cfgPath := filepath.Join(tmpDir, ".androideai", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("model: minimax-m3-free\nollama_model: qwen2.5-coder:7b\nprovider: opencode_zen\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Model != "minimax-m3-free" {
+		t.Errorf("Model = %q, want minimax-m3-free", cfg.Model)
+	}
+	if cfg.OllamaModel != "qwen2.5-coder:7b" {
+		t.Errorf("OllamaModel = %q, want qwen2.5-coder:7b", cfg.OllamaModel)
+	}
+	if cfg.Provider != "opencode_zen" {
+		t.Errorf("Provider = %q, want opencode_zen", cfg.Provider)
+	}
+	if cfg.EffectiveOllamaModel() != "qwen2.5-coder:7b" {
+		t.Errorf("EffectiveOllamaModel = %q, want qwen2.5-coder:7b", cfg.EffectiveOllamaModel())
+	}
+}

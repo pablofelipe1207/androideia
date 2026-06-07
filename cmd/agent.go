@@ -92,6 +92,16 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 		case "openai":
 			apiKey := os.Getenv("OPENAI_API_KEY")
 			llmProvider = llm.NewOpenAIProvider(apiKey, cfg.Model, "")
+		case "opencode_zen":
+			// OpenCode Zen: gateway hospedado por OpenCode con tier
+			// free. La API key es opcional (tier free no la requiere);
+			// si el usuario la tiene (de `opencode auth login` o
+			// variable de entorno) la usamos. BaseURL es
+			// configurable via OPENCODE_ZEN_BASE_URL para self-hosted.
+			zenKey := os.Getenv("OPENCODE_ZEN_API_KEY")
+			zenBase := os.Getenv("OPENCODE_ZEN_BASE_URL")
+			llmProvider = llm.NewOpenCodeZenProviderWithOptions(cfg.Model, zenKey, zenBase, timeoutDur)
+			fmt.Println("Provider: opencode_zen (OpenCode Zen, free tier)")
 		default:
 			return fmt.Errorf("unknown provider: %s", cfg.Provider)
 		}

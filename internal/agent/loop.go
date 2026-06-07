@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -244,7 +245,9 @@ func (a *Agent) Run(task string) error {
 		if len(message.ToolCalls) == 0 && message.Content != "" {
 			extracted := extractToolCallsFromContent(message.Content)
 			if len(extracted) > 0 {
-				fmt.Printf("[Fallback] Extraídas %d tool call(s) del texto del agente.\n", len(extracted))
+				fmt.Printf("\n[Fallback] El modelo no usó la API nativa de tool calls; extrajimos %d call(s) del texto.\n", len(extracted))
+				fmt.Printf("          Esto es frágil (los 'ejemplos' que el modelo escribe en ```json fences pueden ser interpretados como tool calls).\n")
+				fmt.Printf("          Si los resultados no tienen sentido, considerá usar un modelo con tool calling nativo.\n\n")
 				message.ToolCalls = extracted
 			}
 		}
@@ -260,6 +263,17 @@ func (a *Agent) Run(task string) error {
 
 		// Si el agente llama a herramientas, procesamos y seguimos.
 		if message.ToolCalls != nil && len(message.ToolCalls) > 0 {
+			// Deduplicar tool calls idénticas consecutivas (mismo name +
+			// mismo arguments). Algunos modelos (notablemente
+			// qwen2.5-coder:7b) emiten la misma llamada varias veces
+			// en el mismo turno, lo que gasta contexto y vuelve a
+			// invocar handlers idempotentes con el mismo output.
+			deduped := dedupeToolCalls(message.ToolCalls)
+			if removed := len(message.ToolCalls) - len(deduped); removed > 0 {
+				fmt.Printf("[Dedupe] Descartadas %d tool call(s) duplicada(s) (mismo name+arguments que la anterior).\n", removed)
+			}
+			message.ToolCalls = deduped
+
 			anyDenied := false
 			for _, toolCall := range message.ToolCalls {
 				fmt.Printf("\nUsing tool: %s\n", toolCall.Function.Name)
@@ -835,4 +849,80 @@ func extractToolCallsFromContent(content string) []llm.ToolCall {
 		i = end - 1
 	}
 	return calls
+}
+
+// dedupeToolCalls elimina tool calls duplicadas consecutivas (mismo
+// `name` y misma serialización canónica de `arguments`). Mantiene la
+// primera ocurrencia y descarta las siguientes. Devuelve una nueva
+// slice; la entrada no se muta.
+//
+// Caso de uso: qwen2.5-coder y modelos similares a veces emiten la
+// misma llamada varias veces en el mismo turno. Sin este filtro la
+// conversación gasta contexto ejecutando handlers idempotentes y
+// mostrando el mismo output dos veces.
+func dedupeToolCalls(in []llm.ToolCall) []llm.ToolCall {
+	if len(in) <= 1 {
+		return in
+	}
+	out := make([]llm.ToolCall, 0, len(in))
+	for _, tc := range in {
+		argsMap, _ := tc.Function.Arguments.(map[string]interface{})
+		canon, err := canonicalArgs(argsMap)
+		if err != nil {
+			canon = fmt.Sprintf("__raw__:%v", tc.Function.Arguments)
+		}
+		key := tc.Function.Name + "|" + canon
+		if len(out) > 0 {
+			prev := out[len(out)-1]
+			prevMap, _ := prev.Function.Arguments.(map[string]interface{})
+			prevCanon, _ := canonicalArgs(prevMap)
+			prevKey := prev.Function.Name + "|" + prevCanon
+			if prevKey == key {
+				continue
+			}
+		}
+		out = append(out, tc)
+	}
+	return out
+}
+
+// canonicalArgs serializa los arguments de forma estable (claves
+// ordenadas) para poder comparar dos maps por igualdad estructural.
+func canonicalArgs(args map[string]interface{}) (string, error) {
+	if args == nil {
+		return "{}", nil
+	}
+	return orderMarshal(args), nil
+}
+
+// orderMarshal serializa un map[string]interface{} con las claves en
+// orden alfabético y de forma estable. Usado solo por dedupe.
+func orderMarshal(v interface{}) string {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%q:%s", k, orderMarshal(x[k])))
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	case []interface{}:
+		parts := make([]string, 0, len(x))
+		for _, item := range x {
+			parts = append(parts, orderMarshal(item))
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	case string:
+		b, _ := json.Marshal(x)
+		return string(b)
+	case nil:
+		return "null"
+	default:
+		b, _ := json.Marshal(x)
+		return string(b)
+	}
 }

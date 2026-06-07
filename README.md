@@ -262,6 +262,51 @@ androideai skills search "compose"
 | `testing-setup` | Estrategia de testing para Android |
 | `verified-email` | Implementación de email verificado |
 
+## Code Search
+
+There are several commands with `search` in the name. They look
+similar but do different things; pick the one that matches the
+question you're actually asking.
+
+| Question you're asking | Command | How it works |
+|------------------------|---------|--------------|
+| "Does a symbol named X exist?" | `androideai search <keyword>` | FTS5 over `symbols` (full-text, supports `OR`, `*`, `"phrase"`) |
+| "Show me symbols whose name or kind contains X" | `androideai symbol <name\|kind>` | `LIKE %query%` on `symbols.name` / `symbols.kind` |
+| "Where is the code that does X even if it isn't named that?" | `androideai semantic search <query>` | Embeddings + cosine similarity over symbol vectors |
+| "In which file is the ViewModel / Composable / Repository for X?" | `androideai semantic locate <query>` | Filter on `file_semantics` (LLM classification by role/tag) |
+| "What does the project know / what conventions exist?" | `androideai brain search <query>` | FTS5 over `knowledge_entries` |
+
+### `androideai search` (FTS5 over symbols)
+
+`androideai index build` parses every `.kt` / `.kts` with tree-sitter
+and stores each function, class, property, etc. in the `symbols`
+table, mirrored into a SQLite FTS5 index. `search` queries that index
+and prints the matches with a highlighted snippet.
+
+```bash
+$ androideai search login
+Searching for: login
+src/main/java/.../LoginViewModel.kt:7 <b>Login</b>ViewModel : ViewModel()...
+src/main/java/.../LoginUseCase.kt:5   class <b>Login</b>UseCase(@Inject...
+src/main/java/.../LoginScreen.kt:8    fun <b>Login</b>Screen(viewModel: <b>Login</b>ViewModel) {
+
+# Boolean operators and phrase queries are supported (FTS5 syntax):
+androideai search "login OR logout"
+androideai search "login event"      # exact phrase
+androideai search "login*"           # prefix match
+```
+
+This is a **lexical** search: it matches the words you type. It will
+not find a function that does what you want but is named differently.
+For that, use `semantic search`.
+
+### Quick rule of thumb
+
+- **Exact name or known word** → `androideai search` / `symbol`
+- **Describe what the code does** → `androideai semantic search`
+- **Find a file by its role (ViewModel, Repository, ...)** → `androideai semantic locate`
+- **Find project knowledge / conventions** → `androideai brain search`
+
 ## Android Operations
 
 ```bash
@@ -498,10 +543,56 @@ Two configuration files are merged on every command (project wins over global):
 ```yaml
 model: qwen3-coder-64k-32k:latest
 ollama_url: http://localhost:11434
-provider: ollama   # ollama | anthropic | openai
+ollama_model: ""  # optional: model for Ollama-side ops (classify/embed). Falls back to `model` if empty.
+provider: ollama   # ollama | anthropic | openai | opencode_zen
 approval: ask      # ask | auto | never
 timeout: 300       # seconds per LLM call; raise this for slow models / long contexts
 ```
+
+### Providers
+
+| Provider | What it is | Setup |
+|----------|------------|-------|
+| `ollama` (default) | Local LLM via Ollama. Free, private, works offline. | Install [Ollama](https://ollama.com), pull a model, leave the defaults. |
+| `anthropic` | Anthropic Claude API. | Set `ANTHROPIC_API_KEY` env var. |
+| `openai` | OpenAI Chat Completions API. | Set `OPENAI_API_KEY` env var. |
+| `opencode_zen` | [OpenCode Zen](https://opencode.ai/zen), a hosted gateway with a free tier. | Optional `OPENCODE_ZEN_API_KEY` env var (free tier doesn't need one). Optionally override the endpoint with `OPENCODE_ZEN_BASE_URL`. |
+
+#### OpenCode Zen (free tier, no API key required)
+
+[OpenCode Zen](https://opencode.ai/zen) is a curated model gateway from the
+OpenCode team. The free tier includes models like `minimax-m3-free`,
+`glm-4.7-free`, `kimi-k2.5-free`, `gpt-5-nano`, `deepseek-v4-flash-free`
+etc. with no API key required. See the [full model list](https://opencode.ai/zen/v1/models).
+
+The API is OpenAI-compatible, so androideai-core talks to it with
+the standard `POST /v1/chat/completions` shape.
+
+**Hybrid setup (recommended):** use OpenCode Zen for the agent's
+chat and keep Ollama local for embeddings and file classification
+(Ollama is fast and free for those).
+
+```yaml
+# .androideai/config.yml
+provider: opencode_zen
+model: minimax-m3-free           # chat model (OpenCode Zen)
+ollama_model: qwen2.5-coder:7b   # file classification (Ollama)
+ollama_url: http://localhost:11434
+```
+
+Optional environment variables:
+
+- `OPENCODE_ZEN_API_KEY` — if you've logged in with `opencode auth login`,
+  set this to your key. The free tier does not require it.
+- `OPENCODE_ZEN_BASE_URL` — override the endpoint (defaults to
+  `https://opencode.ai/zen/v1`). Useful for self-hosted gateways.
+
+**Note on embeddings:** OpenCode Zen does not currently expose
+embedding models in its catalog, so the `semantic index` step
+(clasificación + embeddings) still uses Ollama. The agent's chat uses
+Zen. If you switch to a provider that does support embeddings
+end-to-end, the hybrid setup above will continue to work because
+`ollama_model` and `model` are separate.
 
 ### Managing config with the CLI
 
@@ -515,7 +606,8 @@ androideai config get model
 # Set a value in the project config
 androideai config set model qwen2.5-coder:7b
 androideai config set ollama_url http://remote:11434
-androideai config set provider ollama
+androideai config set ollama_model qwen2.5-coder:7b  # for the hybrid Zen+Ollama setup
+androideai config set provider opencode_zen
 androideai config set approval auto
 androideai config set timeout 900   # 15 minutes per LLM call
 

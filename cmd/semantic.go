@@ -66,7 +66,7 @@ símbolos ya indexados.`,
 		}
 
 		// Create semantic instance with resolved model
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
+		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
 
 		// 1) Clasificación por archivo (LLM). Es el paso nuevo: para
 		//    cada .kt/.kts del índice, el LLM devuelve {type, tags,
@@ -145,7 +145,7 @@ var semanticSearchCmd = &cobra.Command{
 		}
 
 		// Create semantic instance
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
+		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
 
 		// Search
 		results, err := sem.Search(query, limit)
@@ -213,7 +213,7 @@ arquitectura, un resumen y un snippet de las convenciones detectadas.`,
 			}
 			cfg.Model = resolved
 		}
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
+		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
 
 		if showAll {
 			limit = 200
@@ -283,7 +283,7 @@ var semanticStatusCmd = &cobra.Command{
 			cfg.Model = resolved
 		}
 
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.Model)
+		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
 
 		fmt.Println("Semantic Search Status")
 		fmt.Println("=====================")

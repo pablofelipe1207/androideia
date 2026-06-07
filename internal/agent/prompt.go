@@ -161,14 +161,16 @@ android.*, etc.) and forces the user to clean up after you.
    feature and (if relevant) package, repository_name, etc.
 3. **WRITE** — Replace every "// TODO: <feature>" block with the
    concrete implementation for the user's task. Do NOT leave a single
-   TODO in the file you intend to ship.
+   TODO in the file you intend to ship. Then call write_file with the
+   full file content (no TODOs).
 4. **VALIDATE** — Call validate_kotlin with the file path and the
-   same role. If it returns errors, fix them and re-validate. You
-   should iterate on this loop until the result is OK.
+   same role. If it returns errors, fix the file with another
+   write_file and re-validate. Iterate until the result is OK.
 5. **CONFIRM** — Only when validate_kotlin reports OK, call
-   confirm_plan so the user can review the file. If the user
-   approves, write the file. Then re-validate after write_file to
-   be 100% sure the on-disk content also passes.
+   confirm_plan so the user can review the plan (a textual summary,
+   not the file content). If the user approves, you are DONE — the
+   file is already on disk from step 3. If the user rejects, ask for
+   changes and iterate from step 3.
 
 This contract is enforced by the 'android-scaffold' skill. Treat any
 TODO marker still present at confirm time as a bug, not a placeholder.
@@ -178,7 +180,16 @@ Do NOT output tool calls in plain text, code blocks, or any other format
 inside 'content'. Examples of FORBIDDEN patterns:
 - Writing a JSON object with 'name' and 'arguments' inside your reply
 - Wrapping the same JSON in a code fence marked as json
+- Showing "Step 1: ... {"name": "android_scaffold", ...} ..." as
+  a hypothetical example of what you would do
 - Describing what you "would do" instead of actually invoking the tool
+
+These patterns look like tool calls to a fallback parser and may be
+executed as if they were real tool calls, but they will be wrong:
+duplicated, missing arguments, and out of order. The only way to
+invoke a tool is the native tool call mechanism (the API your runtime
+exposes for function calling). Plain text and code fences are NEVER
+acceptable substitutes.
 
 If you do this, the user will not see any new files in their project and
 the task will be wasted. Always use the native tool call.

@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Model       string `yaml:"model"`
 	OllamaURL   string `yaml:"ollama_url"`
+	OllamaModel string `yaml:"ollama_model"` // modelo usado para clasificación+embeddings en Ollama
 	Provider    string `yaml:"provider"`
 	Approval    string `yaml:"approval"`
 	Timeout     int    `yaml:"timeout"` // seconds; 0 means use default
@@ -26,6 +27,26 @@ func DefaultConfig() *Config {
 		Approval:  "ask",
 		Timeout:   300, // 5 minutes per LLM call
 	}
+}
+
+// EffectiveOllamaModel devuelve el modelo que se debe usar para las
+// operaciones de Ollama (clasificación semántica de archivos,
+// generación de embeddings).
+//
+// Si `OllamaModel` está configurado, se usa ese. Si no, cae al
+// `Model` general (preservando el comportamiento histórico donde el
+// mismo modelo servía para chat y para clasificación).
+//
+// Esto es relevante cuando se usa `provider: opencode_zen` (o
+// cualquier provider no-Ollama): el agente habla con Zen, pero las
+// operaciones de Ollama siguen siendo locales, y necesitan un modelo
+// que sí esté instalado en Ollama (p. ej. `qwen2.5-coder:7b` para
+// clasificación, `nomic-embed-text` para embeddings).
+func (c *Config) EffectiveOllamaModel() string {
+	if c.OllamaModel != "" {
+		return c.OllamaModel
+	}
+	return c.Model
 }
 
 // EffectiveTimeout returns the configured timeout or the default if not set.
