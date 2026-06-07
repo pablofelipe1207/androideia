@@ -39,6 +39,22 @@ feature/
 - **Paquete**: `<app>.<module>.<layer>.<feature>`
 - **Anotaciones**: `@Composable`, `@HiltViewModel`, `@Inject`, `@Module`, `@InstallIn`
 - **Navegación**: Usa `composable("route")` en NavHost
+- **NUNCA sobrescribas código existente**: cuando agregues una feature, crea archivos
+  nuevos. No modifiques ni borres código en archivos existentes (MainActivity,
+  AndroidManifest, navegación, etc.) a menos que la tarea lo pida explícitamente.
+  Preserva siempre el contenido original y agrega junto a él.
+
+## Regla crítica — No destruir código existente
+
+- **NO** sobrescribas archivos existentes. Siempre crea archivos nuevos para código nuevo.
+- Si una feature requiere cambios en un archivo existente (ej. agregar una ruta al NavHost),
+  **lee el archivo primero** y **agrega** el nuevo código sin eliminar el existente.
+- Si MainActivity ya tiene `setContent { ... }` con contenido, **no lo reemplaces**.
+  Agrega imports y código nuevo sin tocar el bloque existente.
+- Prefiere crear un nuevo archivo (ej. `NuevoFeatureScreen.kt`) a modificar uno existente
+  que ya funciona.
+- Excepción: solo cuando el usuario diga explícitamente "reemplaza este archivo" o
+  "sobrescribe este archivo". En ese caso, confirma con `confirm_plan` primero.
 
 ## Ejemplo de creación
 

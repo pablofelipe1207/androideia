@@ -77,3 +77,6 @@ Room, nav route) salga completo, no a medias.
   son el trabajo que TIENES que hacer).
 - **SIEMPRE** correr `validate_kotlin` después de `write_file` y
   antes de `confirm_plan`.
+- **NUNCA SOBRESCRIBAS código existente**. Cuando crees archivos nuevos,
+  no toques los existentes a menos que la tarea lo exija explícitamente.
+  Preserva siempre el contenido original y agrega junto a él.
