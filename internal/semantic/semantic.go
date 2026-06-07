@@ -354,9 +354,19 @@ func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
 
 	// Construir prompt para Ollama
 	var prompt strings.Builder
-	prompt.WriteString("Analiza este proyecto Android y agrupa los archivos en features (funcionalidades).\n")
+	prompt.WriteString("Eres un experto en arquitectura Android (MVVM, Jetpack Compose, Hilt, Room).\n")
+	prompt.WriteString("Analiza este proyecto y agrupa los archivos en FEATURES (funcionalidades completas).\n\n")
+	prompt.WriteString("CRITERIOS para detectar una feature:\n")
+	prompt.WriteString("- Una feature TIENE al menos: Screen/Composable + ViewModel + UseCase/Repository\n")
+	prompt.WriteString("- Patrones típicos MVVM:\n")
+	prompt.WriteString("  * Screen: *Screen.kt, *Composable.kt (UI con @Composable)\n")
+	prompt.WriteString("  * ViewModel: *ViewModel.kt (con @HiltViewModel, UiState/UiEvent)\n")
+	prompt.WriteString("  * UseCase: *UseCase.kt (operator invoke, @Inject)\n")
+	prompt.WriteString("  * Repository: *Repository.kt (interface + Impl, sin android.*)\n")
+	prompt.WriteString("  * Module: *Module.kt (@Module @InstallIn Hilt)\n")
+	prompt.WriteString("  * Route: *Routes.kt (composable routes)\n\n")
 	prompt.WriteString("Devuelve SOLO JSON válido con este formato:\n")
-	prompt.WriteString(`{"features": [{"name": "login", "description": "Autenticación de usuarios", "files": ["app/src/main/java/.../LoginScreen.kt", "app/src/main/java/.../LoginViewModel.kt"]}]}\n\n`)
+	prompt.WriteString(`{"features": [{"name": "login", "description": "Autenticación de usuarios (login, registro, recuperación)", "files": ["app/src/main/java/.../ui/login/LoginScreen.kt", "app/src/main/java/.../ui/login/LoginViewModel.kt", "app/src/main/java/.../domain/usecase/LoginUseCase.kt", "app/src/main/java/.../data/repository/UserRepository.kt"]}]}\n\n`)
 	prompt.WriteString("Archivos y símbolos:\n\n")
 
 	for _, fi := range files {
