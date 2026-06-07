@@ -226,6 +226,9 @@ func (m *Memory) ToLLMMessages(stored []StoredMessage) []llm.Message {
 		if len(s.ToolCalls) > 0 {
 			msg.ToolCalls = s.ToolCalls
 		}
+		if s.ToolCallID != "" {
+			msg.ToolCallID = s.ToolCallID
+		}
 		out = append(out, msg)
 	}
 	return out
