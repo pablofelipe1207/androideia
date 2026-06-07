@@ -70,6 +70,23 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 			fmt.Println("  • .androideai/config.yml ya existe, se conserva")
 		}
 
+		// Crear models.yml (nuevo formato de configuración de modelos)
+		// con valores por defecto sensatos: agente con OpenCode Zen
+		// (free) y semantic con Ollama local.
+		modelsPath := filepath.Join(".androideai", "models.yml")
+		if _, err := os.Stat(modelsPath); os.IsNotExist(err) {
+			mc := config.DefaultModelsConfig()
+			mc.ProjectPath = modelsPath
+			if err := mc.Save(modelsPath); err != nil {
+				return fmt.Errorf("error creando models.yml: %w", err)
+			}
+			fmt.Println("  ✓ Created .androideai/models.yml")
+			fmt.Println("    (configuración de modelos: agent + semantic index)")
+			fmt.Println("    Editá con 'androideai models set' o a mano.")
+		} else {
+			fmt.Println("  • .androideai/models.yml ya existe, se conserva")
+		}
+
 		dbPath := filepath.Join(".androideai", "core.db")
 		dbExisted := true
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {

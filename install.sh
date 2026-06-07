@@ -360,17 +360,39 @@ install_global_config() {
 
     if [ -f "$GLOBAL_CONFIG" ]; then
         echo "Global config already exists at: $GLOBAL_CONFIG (skipping)"
-        return
-    fi
-
-    cat > "$GLOBAL_CONFIG" << EOF
-# androideai-core global configuration
-# Edit this file or use: androideai config set <key> <value> --global
+    else
+        cat > "$GLOBAL_CONFIG" << EOF
+# androideai-core global configuration (legacy / fallback format)
+# Prefer editing models.yml para configurar providers y modelos.
+# Este archivo se mantiene por compat: contiene approval, timeout y
+# un fallback de los campos de modelo (sync automático desde models.yml).
 model: qwen3-coder-64k-32k:latest
 ollama_url: http://localhost:11434
 provider: ollama
 approval: ask
 EOF
+    fi
+
+    # Crear también models.yml (nuevo formato) con defaults sensatos.
+    local MODELS_CONFIG="$GLOBAL_DIR/models.yml"
+    if [ -f "$MODELS_CONFIG" ]; then
+        echo "Global models config already exists at: $MODELS_CONFIG (skipping)"
+    else
+        cat > "$MODELS_CONFIG" << EOF
+# androideai-core — model configuration
+# Editá a mano o usá 'androideai models set <seccion.campo> <valor> --global'.
+# Defaults: agent con OpenCode Zen (free, sin key) y semantic con Ollama local.
+agent:
+  provider: opencode_zen
+  model: minimax-m3-free
+semantic:
+  provider: ollama
+  base_url: http://localhost:11434
+  chat_model: qwen2.5-coder:7b
+  embedding_model: nomic-embed-text
+EOF
+        echo "Created global models config: $MODELS_CONFIG"
+    fi
 
     echo "Created global config at: $GLOBAL_CONFIG"
 }

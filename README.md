@@ -533,14 +533,102 @@ The agent's mandatory workflow per new file is:
 
 ## Configuration
 
-Two configuration files are merged on every command (project wins over global):
+Three files are involved; **the model configuration lives in
+`models.yml`** (see next section). The legacy `config.yml` is kept
+for `approval`, `timeout`, and as a fallback for older callers.
 
-| Scope | Path | Created by |
-|-------|------|------------|
-| Global | `~/.androideai/config.yml` | `install.sh` (during install) |
-| Project | `./.androideai/config.yml` | `androideai init` |
+| Scope | Path | Created by | What it holds |
+|-------|------|------------|---------------|
+| Global models | `~/.androideai/models.yml` | `install.sh` | agent + semantic index provider/model |
+| Project models | `./.androideai/models.yml` | `androideai init` | overrides global |
+| Global config (legacy) | `~/.androideai/config.yml` | `install.sh` | approval, timeout, fallback model fields |
+| Project config (legacy) | `./.androideai/config.yml` | `androideai init` | overrides global |
+
+### `models.yml` — the one place to configure models
+
+This is the file you should edit when you install androideai-core in
+a new environment. It has two top-level sections: `agent` (the LLM
+that the agent loop talks to) and `semantic` (the LLM + embeddings
+used by `androideai semantic index` and `androideai init`).
 
 ```yaml
+# ~/.androideai/models.yml
+agent:
+  # Provider: ollama | anthropic | openai | opencode_zen
+  provider: opencode_zen
+
+  # Model (provider-specific)
+  model: minimax-m3-free
+
+  # Optional: override the base URL (default depends on provider)
+  # base_url: https://opencode.ai/zen/v1
+
+  # Optional: name of the env var that holds the API key.
+  # Leave empty for the free tier of OpenCode Zen.
+  # api_key_env: OPENCODE_ZEN_API_KEY
+
+semantic:
+  # Only "ollama" is supported here (it's the only provider with
+  # embeddings implemented). If you want to use another provider for
+  # semantic, leave this on Ollama and point the agent to the other
+  # provider in the `agent` block above.
+  provider: ollama
+
+  # Where Ollama is listening
+  base_url: http://localhost:11434
+
+  # Model used for file classification (LLM call to Ollama)
+  chat_model: qwen2.5-coder:7b
+
+  # Model used for embeddings
+  embedding_model: nomic-embed-text
+```
+
+Defaults are sensible for a fresh install: the agent talks to
+OpenCode Zen (free tier, no API key) and the semantic flow uses a
+local Ollama. This hybrid avoids both the cost of cloud chat and
+the cost of cloud embeddings.
+
+To pull the embedding model locally:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+### Managing models from the CLI
+
+```bash
+# Show the effective configuration (project overrides global)
+androideai models show
+
+# List available models for the current provider
+androideai models list
+
+# Set a value (writes to the project models.yml AND syncs the
+# legacy config.yml so the semantic flow sees the change)
+androideai models set agent.provider opencode_zen
+androideai models set agent.model minimax-m3-free
+androideai models set semantic.chat_model qwen2.5-coder:7b
+androideai models set semantic.embedding_model nomic-embed-text
+androideai models set agent.api_key_env OPENCODE_ZEN_API_KEY
+
+# Create a fresh models.yml with defaults (or migrate from the
+# legacy config.yml if one exists)
+androideai models init              # project file
+androideai models init --global     # global file
+
+# Show where models.yml is loaded from
+androideai models path
+```
+
+### Legacy `config.yml` (still supported)
+
+The legacy flat config keeps working. If you don't want to use
+`models.yml`, you can keep using the old `androideai config set`
+commands:
+
+```yaml
+# ~/.androideai/config.yml
 model: qwen3-coder-64k-32k:latest
 ollama_url: http://localhost:11434
 ollama_model: ""  # optional: model for Ollama-side ops (classify/embed). Falls back to `model` if empty.

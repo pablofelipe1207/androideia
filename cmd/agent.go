@@ -43,22 +43,42 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 			return fmt.Errorf("error loading config: %w", err)
 		}
 
+		// Load NEW models config (con migración automática desde
+		// config.yml plano). Si existe, sobrescribe los campos de
+		// modelo del config viejo para que esta sea la fuente de
+		// verdad.
+		mc, migrated, err := config.LoadModelsConfig()
+		if err != nil {
+			return fmt.Errorf("error loading models config: %w", err)
+		}
+		if migrated {
+			fmt.Println("[Models] No se encontró models.yml; se migró desde config.yml (formato antiguo).")
+			fmt.Println("          Ejecutá 'androideai models init' para persistir el nuevo formato.")
+		}
+
 		// Override model from --model flag if provided
 		if agentModel != "" {
-			cfg.Model = agentModel
-			fmt.Printf("Using model override: %s\n", cfg.Model)
+			mc.Agent.Model = agentModel
+			fmt.Printf("Using model override: %s\n", mc.Agent.Model)
 		}
 
 		// Auto-resolve model from Ollama if provider is ollama.
-		if cfg.Provider == "ollama" {
-			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+		if mc.Agent.Provider == "ollama" {
+			baseURL := mc.Agent.BaseURL
+			if baseURL == "" {
+				baseURL = mc.Semantic.BaseURL // fallback
+			}
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			resolved, autoSelected, err := llm.ResolveOllamaModel(baseURL, mc.Agent.Model)
 			if err != nil {
 				return fmt.Errorf("error resolving model: %w", err)
 			}
 			if autoSelected {
-				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, mc.Agent.Model)
 			}
-			cfg.Model = resolved
+			mc.Agent.Model = resolved
 		}
 
 		// Open store
@@ -83,32 +103,43 @@ La sesión queda persistida en .androideai/core.db; puedes verla con
 
 		// Create LLM provider
 		var llmProvider llm.Provider
-		switch cfg.Provider {
+		switch mc.Agent.Provider {
 		case "ollama":
-			llmProvider = llm.NewOllamaProviderWithTimeout(cfg.OllamaURL, cfg.Model, timeoutDur)
+			baseURL := mc.Agent.BaseURL
+			if baseURL == "" {
+				baseURL = mc.Semantic.BaseURL
+			}
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			llmProvider = llm.NewOllamaProviderWithTimeout(baseURL, mc.Agent.Model, timeoutDur)
 		case "anthropic":
-			apiKey := os.Getenv("ANTHROPIC_API_KEY")
-			llmProvider = llm.NewAnthropicProvider(apiKey, cfg.Model)
+			apiKey := mc.Agent.APIKey()
+			if apiKey == "" {
+				apiKey = os.Getenv("ANTHROPIC_API_KEY") // legacy
+			}
+			llmProvider = llm.NewAnthropicProvider(apiKey, mc.Agent.Model)
 		case "openai":
-			apiKey := os.Getenv("OPENAI_API_KEY")
-			llmProvider = llm.NewOpenAIProvider(apiKey, cfg.Model, "")
+			apiKey := mc.Agent.APIKey()
+			if apiKey == "" {
+				apiKey = os.Getenv("OPENAI_API_KEY") // legacy
+			}
+			llmProvider = llm.NewOpenAIProvider(apiKey, mc.Agent.Model, mc.Agent.BaseURL)
 		case "opencode_zen":
-			// OpenCode Zen: gateway hospedado por OpenCode con tier
-			// free. La API key es opcional (tier free no la requiere);
-			// si el usuario la tiene (de `opencode auth login` o
-			// variable de entorno) la usamos. BaseURL es
-			// configurable via OPENCODE_ZEN_BASE_URL para self-hosted.
-			zenKey := os.Getenv("OPENCODE_ZEN_API_KEY")
-			zenBase := os.Getenv("OPENCODE_ZEN_BASE_URL")
-			llmProvider = llm.NewOpenCodeZenProviderWithOptions(cfg.Model, zenKey, zenBase, timeoutDur)
+			zenKey := mc.Agent.APIKey()
+			zenBase := mc.Agent.BaseURL
+			if zenBase == "" {
+				zenBase = os.Getenv("OPENCODE_ZEN_BASE_URL") // legacy
+			}
+			llmProvider = llm.NewOpenCodeZenProviderWithOptions(mc.Agent.Model, zenKey, zenBase, timeoutDur)
 			fmt.Println("Provider: opencode_zen (OpenCode Zen, free tier)")
 		default:
-			return fmt.Errorf("unknown provider: %s", cfg.Provider)
+			return fmt.Errorf("unknown provider: %s", mc.Agent.Provider)
 		}
 
 		// Check if provider is available
 		if !llmProvider.IsAvailable() {
-			return fmt.Errorf("LLM provider '%s' is not available. Please check your configuration.", cfg.Provider)
+			return fmt.Errorf("LLM provider '%s' is not available. Revisá 'androideai models show' y la conectividad.", mc.Agent.Provider)
 		}
 
 		// Create and run agent

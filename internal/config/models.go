@@ -151,15 +151,18 @@ func LoadModelsConfig() (*ModelsConfig, bool, error) {
 
 // tryMigrateFromFlatConfig intenta poblar el ModelsConfig con los
 // valores del config.yml plano. Devuelve true si encontró un
-// config.yml y migró.
+// config.yml REAL en disco (no defaults) y migró.
 func tryMigrateFromFlatConfig(cfg *ModelsConfig) (bool, error) {
+	// Sólo intentamos migrar si el config.yml plano existe REALMENTE
+	// en disco. Si no existe, los defaults de Config tienen
+	// `Provider: "ollama"` que haría que cualquier "migración"
+	// parezca haber encontrado un config cuando en realidad no.
 	flat, err := LoadConfig()
 	if err != nil {
-		return false, nil // No hay config plano tampoco: defaults
+		return false, nil
 	}
-
-	// Si el config plano no tiene provider, no migrar.
-	if flat.Provider == "" {
+	// LoadConfig carga global + project; ver si alguno existe.
+	if !fileExists(flat.GlobalPath) && !fileExists(flat.ProjectPath) {
 		return false, nil
 	}
 
