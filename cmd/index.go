@@ -53,6 +53,10 @@ var indexBuildCmd = &cobra.Command{
 
 		fmt.Printf("Found %d Kotlin files\n", len(files))
 
+		// Limpiar índices anteriores para re-indexar limpio
+		s.DB().Exec("DELETE FROM symbols")
+		s.DB().Exec("DELETE FROM symbols_fts")
+
 		// Extract symbols and store
 		// Use tree-sitter parser for better accuracy
 		extractor := index.NewTreeSitterExtractor()
