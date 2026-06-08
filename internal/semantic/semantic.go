@@ -317,15 +317,26 @@ type FeatureInfo struct {
 // DiscoverFeatures usa Ollama para analizar el código y descubrir
 // features del proyecto. Agrupa archivos/símbolos en features coherentes.
 func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
-	// Obtener todos los archivos con sus símbolos
-	rows, err := s.db.Query(`
-		SELECT f.path, f.package, f.module, f.layer,
+	// Obtener solo ViewModels y archivos relacionados (screen, usecase, repository, module, route)
+	mvvmKinds := []string{"viewmodel", "screen", "composable", "usecase", "repository", "module", "route", "activity", "fragment", "dao", "entity"}
+	placeholders := make([]string, len(mvvmKinds))
+	args := make([]interface{}, len(mvvmKinds))
+	for i, k := range mvvmKinds {
+		placeholders[i] = "?"
+		args[i] = k
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT f.path, f.package, f.module, f.layer,
 		       COALESCE(GROUP_CONCAT(s.name || ':' || s.kind, ';'), '') as symbols
 		FROM files f
 		LEFT JOIN symbols s ON s.file_id = f.id
+		WHERE s.kind IN (%s)
 		GROUP BY f.id, f.path, f.package, f.module, f.layer
 		ORDER BY f.path
-	`)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("error querying files: %w", err)
 	}
@@ -340,12 +351,23 @@ func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
 	}
 
 	var files []FileInfo
+	viewModelNames := []string{}
 	for rows.Next() {
 		var fi FileInfo
 		if err := rows.Scan(&fi.Path, &fi.Package, &fi.Module, &fi.Layer, &fi.Symbols); err != nil {
 			return nil, fmt.Errorf("error scanning file: %w", err)
 		}
 		files = append(files, fi)
+		
+		// Extraer nombres de ViewModel para pasarlos como pistas
+		if strings.Contains(fi.Symbols, "viewmodel") {
+			for _, sym := range strings.Split(fi.Symbols, ";") {
+				parts := strings.Split(sym, ":")
+				if len(parts) == 2 && parts[1] == "viewmodel" {
+					viewModelNames = append(viewModelNames, parts[0])
+				}
+			}
+		}
 	}
 
 	if len(files) == 0 {
@@ -356,18 +378,26 @@ func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
 	var prompt strings.Builder
 	prompt.WriteString("Eres un experto en arquitectura Android (MVVM, Jetpack Compose, Hilt, Room).\n")
 	prompt.WriteString("Analiza este proyecto y agrupa los archivos en FEATURES (funcionalidades completas).\n\n")
-	prompt.WriteString("CRITERIOS para detectar una feature:\n")
-	prompt.WriteString("- Una feature TIENE al menos: Screen/Composable + ViewModel + UseCase/Repository\n")
-	prompt.WriteString("- Patrones típicos MVVM:\n")
-	prompt.WriteString("  * Screen: *Screen.kt, *Composable.kt (UI con @Composable)\n")
-	prompt.WriteString("  * ViewModel: *ViewModel.kt (con @HiltViewModel, UiState/UiEvent)\n")
-	prompt.WriteString("  * UseCase: *UseCase.kt (operator invoke, @Inject)\n")
-	prompt.WriteString("  * Repository: *Repository.kt (interface + Impl, sin android.*)\n")
-	prompt.WriteString("  * Module: *Module.kt (@Module @InstallIn Hilt)\n")
-	prompt.WriteString("  * Route: *Routes.kt (composable routes)\n\n")
+	
+	if len(viewModelNames) > 0 {
+		prompt.WriteString("VIEWMODELS DETECTADOS (usa estos nombres base para las features):\n")
+		for _, vm := range viewModelNames {
+			base := strings.TrimSuffix(vm, "ViewModel")
+			prompt.WriteString(fmt.Sprintf("- %s -> feature '%s'\n", vm, strings.ToLower(base)))
+		}
+		prompt.WriteString("\n")
+	}
+	
+	prompt.WriteString("REGLAS CRÍTICAS:\n")
+	prompt.WriteString("1. UNA feature = conjunto de archivos que pertenecen a la MISMA funcionalidad.\n")
+	prompt.WriteString("2. Nombra la feature usando EXACTAMENTE los nombres base de los ViewModels detectados arriba.\n")
+	prompt.WriteString("3. NO uses rutas de archivo como nombre de feature.\n")
+	prompt.WriteString("4. Agrupa todos los archivos relacionados (Screen, ViewModel, UseCase, Repository, Module, Route)\n")
+	prompt.WriteString("   bajo el nombre base del ViewModel correspondiente.\n\n")
 	prompt.WriteString("Devuelve SOLO JSON válido con este formato:\n")
-	prompt.WriteString(`{"features": [{"name": "login", "description": "Autenticación de usuarios (login, registro, recuperación)", "files": ["app/src/main/java/.../ui/login/LoginScreen.kt", "app/src/main/java/.../ui/login/LoginViewModel.kt", "app/src/main/java/.../domain/usecase/LoginUseCase.kt", "app/src/main/java/.../data/repository/UserRepository.kt"]}]}\n\n`)
-	prompt.WriteString("Archivos y símbolos:\n\n")
+	prompt.WriteString(`{"features": [{"name": "nombreFeature", "description": "descripción breve", "files": ["ruta/archivo1.kt", "ruta/archivo2.kt"]}]}`)
+	prompt.WriteString("\n\n")
+	prompt.WriteString("Archivos con símbolos (filtrados capas MVVM):\n\n")
 
 	for _, fi := range files {
 		prompt.WriteString(fmt.Sprintf("Archivo: %s\n", fi.Path))

@@ -18,6 +18,7 @@ var (
 	initNoSemantic      bool
 	initNoBrainSeed     bool
 	initNoLLMFeatures   bool
+	initWithLLMFeatures bool
 )
 
 var initCmd = &cobra.Command{
@@ -27,9 +28,10 @@ var initCmd = &cobra.Command{
 de datos del proyecto. Por defecto, además:
 
   1. Construye el índice de código (androideai index build).
-  2. Si Ollama está disponible, descubre features con LLM (androideai index build --use-llm).
-  3. Si Ollama está disponible, corre la clasificación LLM de
+  2. Si Ollama está disponible, corre la clasificación LLM de
      archivos + embeddings (androideai semantic index).
+  3. Si Ollama está disponible y se pasa --with-llm-features,
+     descubre features con LLM (androideai index build --use-llm).
   4. Si la clasificación produjo convenciones, las guarda en el brain
      como entradas tipo "convention" para que el agente las use
      (brain_search "ViewModel convention", etc.).
@@ -118,20 +120,7 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 		}
 
 		// ------------------------------------------------------------
-		// 3) Descubrimiento de features con LLM (index build --use-llm)
-		// ------------------------------------------------------------
-		if !initNoLLMFeatures {
-			fmt.Println()
-			fmt.Println("→ Descubriendo features con LLM (Ollama)...")
-			if err := runLLMFeatureDiscoverySilently(); err != nil {
-				fmt.Printf("  ⚠️  LLM feature discovery falló: %v\n", err)
-			}
-		} else {
-			fmt.Println("→ Saltando LLM feature discovery (--no-llm-features)")
-		}
-
-		// ------------------------------------------------------------
-		// 4) Semántica (LLM classify + embeddings)
+		// 3) Semántica (LLM classify + embeddings)
 		// ------------------------------------------------------------
 		classifiedSomething := false
 		if !initNoSemantic {
@@ -148,7 +137,22 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 		}
 
 		// ------------------------------------------------------------
-		// 4) Sembrar el brain con las convenciones detectadas
+		// 4) Descubrimiento de features con LLM (opcional, --with-llm-features)
+		//    Requiere que el índice semántico haya corrido primero para
+		//    tener los ViewModels y archivos clasificados en la DB.
+		// ------------------------------------------------------------
+		if initWithLLMFeatures {
+			fmt.Println()
+			fmt.Println("→ Descubriendo features con LLM (Ollama)...")
+			if err := runLLMFeatureDiscoverySilently(); err != nil {
+				fmt.Printf("  ⚠️  LLM feature discovery falló: %v\n", err)
+			}
+		} else {
+			fmt.Println("→ Saltando descubrimiento LLM de features (usa --with-llm-features para habilitar)")
+		}
+
+		// ------------------------------------------------------------
+		// 5) Sembrar el brain con las convenciones detectadas
 		// ------------------------------------------------------------
 		if !initNoBrainSeed {
 			fmt.Println()
@@ -391,5 +395,6 @@ func init() {
 	initCmd.Flags().BoolVar(&initNoIndex, "no-index", false, "Saltar la construcción del índice de código")
 	initCmd.Flags().BoolVar(&initNoSemantic, "no-semantic", false, "Saltar la clasificación LLM y los embeddings")
 	initCmd.Flags().BoolVar(&initNoLLMFeatures, "no-llm-features", false, "Saltar el descubrimiento de features con LLM")
+	initCmd.Flags().BoolVar(&initWithLLMFeatures, "with-llm-features", false, "Habilitar descubrimiento de features con LLM (requiere Ollama con modelo capaz)")
 	initCmd.Flags().BoolVar(&initNoBrainSeed, "no-brain-seed", false, "No sembrar el brain con las convenciones detectadas")
 }

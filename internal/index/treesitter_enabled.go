@@ -249,16 +249,27 @@ func (e *TreeSitterExtractor) InferLayer(filePath string, content string) string
 }
 
 func (e *TreeSitterExtractor) ExtractFeature(symbols []Symbol) string {
+	// Primero intenta detectar por prefijo común en ViewModel/UseCase/Repository
+	for _, sym := range symbols {
+		if sym.Kind == "viewmodel" || sym.Kind == "usecase" || sym.Kind == "repository" {
+			name := sym.Name
+			// Buscar prefijo común: CounterViewModel -> counter, LoginUseCase -> login
+			for _, suffix := range []string{"ViewModel", "UseCase", "Repository", "RepositoryImpl", "Screen", "Composable", "Effect", "Event", "State", "Module", "Route"} {
+				if strings.HasSuffix(name, suffix) {
+					return strings.ToLower(strings.TrimSuffix(name, suffix))
+				}
+			}
+		}
+	}
+	// Fallback: buscar en screen/composable
 	for _, sym := range symbols {
 		if sym.Kind == "screen" || sym.Kind == "composable" {
 			name := sym.Name
-			if strings.HasSuffix(name, "Screen") {
-				name = strings.TrimSuffix(name, "Screen")
+			for _, suffix := range []string{"Screen", "Composable"} {
+				if strings.HasSuffix(name, suffix) {
+					return strings.ToLower(strings.TrimSuffix(name, suffix))
+				}
 			}
-			if strings.HasSuffix(name, "Composable") {
-				name = strings.TrimSuffix(name, "Composable")
-			}
-			return strings.ToLower(name)
 		}
 	}
 	return ""

@@ -116,7 +116,10 @@ var indexBuildCmd = &cobra.Command{
 			fmt.Printf("Indexed %s: %d symbols (feature: %s)\n", file.Path, len(symbols), featureName)
 		}
 
-		// Optional: LLM-based feature discovery (Ollama)
+		// Optional: LLM-based feature discovery (Ollama) - only for capable models
+		// Disabled by default because small models (qwen2.5:1.5b) can't follow complex grouping instructions.
+		// The heuristic ExtractFeature() already works correctly (e.g. extracts "counter" from CounterViewModel).
+		// Enable with --use-llm ONLY if using a capable model (qwen2.5-coder:7b+, llama3+, etc.)
 		if indexUseLLM {
 			fmt.Println("Running LLM-based feature discovery...")
 			mc, _, err := config.LoadModelsConfig()
@@ -133,23 +136,36 @@ var indexBuildCmd = &cobra.Command{
 
 				sem := semantic.NewSemantic(s.DB(), baseURL, model)
 				if sem.IsAvailable() {
+					// Collect heuristic features already found
+					heuristicFeatures := make(map[string]bool)
+					rows, err := s.DB().Query(`
+						SELECT DISTINCT feature, COUNT(*) 
+						FROM symbols 
+						WHERE feature != '' AND feature IS NOT NULL
+						GROUP BY feature
+					`)
+					if err == nil {
+						defer rows.Close()
+						for rows.Next() {
+							var feat string
+							var count int
+							if rows.Scan(&feat, &count) == nil {
+								heuristicFeatures[feat] = true
+							}
+						}
+					}
+
 					fileToFeature, err := sem.DiscoverFeatures()
 					if err != nil {
 						fmt.Printf("Warning: LLM feature discovery failed: %v\n", err)
 					} else {
-						tagged, err := sem.TagSymbolsWithFeatures(fileToFeature)
-						if err != nil {
-							fmt.Printf("Warning: Failed to tag features: %v\n", err)
-						} else {
-							fmt.Printf("LLM feature discovery: tagged %d symbols across %d files\n", tagged, len(fileToFeature))
-							// Print discovered features
-							features := make(map[string]bool)
-							for _, f := range fileToFeature {
-								features[f] = true
-							}
-							for feat := range features {
-								fmt.Printf("  Discovered feature: %s\n", feat)
-							}
+						// Merge: keep heuristic features, add LLM-only ones
+						for _, feat := range fileToFeature {
+							heuristicFeatures[feat] = true
+						}
+						fmt.Printf("LLM feature discovery: %d features total (heuristic + LLM)\n", len(heuristicFeatures))
+						for feat := range heuristicFeatures {
+							fmt.Printf("  Feature: %s\n", feat)
 						}
 					}
 				} else {
