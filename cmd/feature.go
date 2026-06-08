@@ -110,6 +110,9 @@ var featureListCmd = &cobra.Command{
 		fmt.Println(strings.Repeat("─", 50))
 		found := false
 		for feat, count := range features {
+			if count <= 2 {
+				continue
+			}
 			found = true
 			fmt.Printf("  %s (%d archivos)\n", feat, count)
 		}
