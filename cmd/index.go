@@ -74,7 +74,7 @@ var indexBuildCmd = &cobra.Command{
 			file.Layer = extractor.InferLayer(file.Path, string(content))
 
 			// Insert file
-			result, err := s.DB().Exec(
+			_, err = s.DB().Exec(
 				"INSERT OR REPLACE INTO files (path, package, module, layer, hash, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'))",
 				file.Path, file.Package, file.Module, file.Layer, file.Hash,
 			)
@@ -82,9 +82,11 @@ var indexBuildCmd = &cobra.Command{
 				return fmt.Errorf("error inserting file %s: %w", file.Path, err)
 			}
 
-			fileID, err := result.LastInsertId()
+			// Get file ID (query instead of LastInsertId to avoid issues with INSERT OR REPLACE)
+			var fileID int64
+			err = s.DB().QueryRow("SELECT id FROM files WHERE path = ?", file.Path).Scan(&fileID)
 			if err != nil {
-				return fmt.Errorf("error getting file ID: %w", err)
+				return fmt.Errorf("error getting file ID for %s: %w", file.Path, err)
 			}
 
 			// Extract symbols
