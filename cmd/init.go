@@ -193,10 +193,9 @@ func runIndexBuildSilently() error {
 	return indexBuildCmd.RunE(indexBuildCmd, nil)
 }
 
-// runLLMFeatureDiscoverySilently invoca el descubrimiento de features
-// con LLM usando el comando `index build --use-llm`.
+// runLLMFeatureDiscoverySilently descubre features usando LLM
+// sobre el índice YA CONSTRUIDO (no re-indexa).
 func runLLMFeatureDiscoverySilently() error {
-	// Cargar config para verificar Ollama
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -208,13 +207,70 @@ func runLLMFeatureDiscoverySilently() error {
 		}
 	}
 
-	// Usar indexBuildCmd con la flag --use-llm
-	// Temporalmente activamos la flag
-	oldUseLLM := indexUseLLM
-	indexUseLLM = true
-	defer func() { indexUseLLM = oldUseLLM }()
+	mc, _, err := config.LoadModelsConfig()
+	if err != nil {
+		return fmt.Errorf("load models config: %w", err)
+	}
+	if mc.Semantic.Provider != "ollama" {
+		fmt.Println("  Semantic provider no es Ollama; se omite descubrimiento LLM.")
+		return nil
+	}
 
-	return indexBuildCmd.RunE(indexBuildCmd, nil)
+	baseURL := mc.Semantic.BaseURL
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	// Auto-resolver el modelo igual que en semantic index
+	model := mc.Semantic.ChatModel
+	if model == "" {
+		model = cfg.EffectiveOllamaModel()
+	}
+	resolved, autoSelected, err := llm.ResolveOllamaModel(baseURL, model)
+	if err != nil {
+		fmt.Printf("  ⚠️  No se pudo resolver modelo Ollama: %v\n", err)
+		return nil
+	}
+	if autoSelected {
+		fmt.Printf("  Ollama tiene un solo modelo; usando %s (config tenía %s)\n", resolved, model)
+	}
+	model = resolved
+
+	dbPath := filepath.Join(".androideai", "core.db")
+	s, err := store.NewStore(dbPath)
+	if err != nil {
+		return fmt.Errorf("error opening database: %w", err)
+	}
+	defer s.Close()
+
+	sem := semantic.NewSemantic(s.DB(), baseURL, model)
+	if !sem.IsAvailable() {
+		fmt.Println("  Ollama no disponible; se omite descubrimiento de features.")
+		return nil
+	}
+
+	fmt.Println("  Analizando archivos con LLM para detectar features MVVM...")
+	fileToFeature, err := sem.DiscoverFeatures()
+	if err != nil {
+		return fmt.Errorf("LLM feature discovery failed: %w", err)
+	}
+
+	if len(fileToFeature) == 0 {
+		fmt.Println("  No se detectaron features nuevas (quizás el proyecto está vacío o no sigue patrones MVVM)")
+		return nil
+	}
+
+	tagged, err := sem.TagSymbolsWithFeatures(fileToFeature)
+	if err != nil {
+		return fmt.Errorf("failed to tag features: %w", err)
+	}
+
+	fmt.Printf("  LLM feature discovery: etiquetados %d símbolos en %d archivos\n", tagged, len(fileToFeature))
+	for feat := range fileToFeature {
+		fmt.Printf("    Descubierto feature: %s\n", feat)
+	}
+
+	return nil
 }
 
 // runSemanticIndexSilently invoca `semantic index` y devuelve (true,

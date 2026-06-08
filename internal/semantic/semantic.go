@@ -320,7 +320,7 @@ func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
 	// Obtener todos los archivos con sus símbolos
 	rows, err := s.db.Query(`
 		SELECT f.path, f.package, f.module, f.layer,
-		       GROUP_CONCAT(s.name || ':' || s.kind, ';') as symbols
+		       COALESCE(GROUP_CONCAT(s.name || ':' || s.kind, ';'), '') as symbols
 		FROM files f
 		LEFT JOIN symbols s ON s.file_id = f.id
 		GROUP BY f.id, f.path, f.package, f.module, f.layer

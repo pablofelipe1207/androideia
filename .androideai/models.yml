@@ -1,0 +1,20 @@
+# androideai-core — model configuration
+#
+# Este archivo controla qué provider/modelo usa el agente
+# (chat) y qué modelos usa el flujo de semantic index
+# (clasificación LLM de archivos + generación de embeddings).
+#
+# Editar a mano es la forma más rápida. También se puede usar
+# `androideai models show` para ver el efectivo y
+# `androideai models set <seccion.campo> <valor>` para modificar.
+#
+# docs: https://github.com/pablofelipe1207/androideai-core
+
+agent:
+    provider: opencode_zen
+    model: mimo-v2.5-free
+semantic:
+    provider: ollama
+    base_url: http://localhost:11434
+    chat_model: qwen2.5-coder:7b
+    embedding_model: nomic-embed-text
