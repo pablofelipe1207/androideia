@@ -315,33 +315,31 @@ type FeatureInfo struct {
 	Files       []string `json:"files"`
 }
 
-// DiscoverFeatures busca ViewModels en la DB, extrae el nombre base
-// (quitando "ViewModel") y devuelve un mapa archivo→feature para todos
-// los archivos relacionados: los del mismo directorio Y los que contengan
-// el nombre base en su nombre de archivo dentro del mismo paquete.
-// No usa LLM — es 100% heurístico.
+// DiscoverFeatures busca ViewModels en file_semantics (clasificación LLM),
+// extrae el nombre base (quitando "ViewModel") y devuelve un mapa
+// archivo→feature para todos los archivos relacionados.
+// No usa LLM — es 100% heurístico sobre la clasificación existente.
 func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
-	// 1) Buscar todos los símbolos de tipo viewmodel
+	// 1) Buscar archivos clasificados como viewmodel en file_semantics
 	rows, err := s.db.Query(`
-		SELECT s.name, f.path, f.package
-		FROM symbols s
-		JOIN files f ON f.id = s.file_id
-		WHERE s.kind = 'viewmodel'
+		SELECT f.path, f.package
+		FROM file_semantics fs
+		JOIN files f ON f.id = fs.file_id
+		WHERE fs.type = 'viewmodel'
 	`)
 	if err != nil {
-		return nil, fmt.Errorf("error querying viewmodels: %w", err)
+		return nil, fmt.Errorf("error querying viewmodels from file_semantics: %w", err)
 	}
 	defer rows.Close()
 
 	type vmInfo struct {
-		Name    string
 		Path    string
 		Package string
 	}
 	var viewmodels []vmInfo
 	for rows.Next() {
 		var v vmInfo
-		if err := rows.Scan(&v.Name, &v.Path, &v.Package); err != nil {
+		if err := rows.Scan(&v.Path, &v.Package); err != nil {
 			return nil, fmt.Errorf("error scanning viewmodel: %w", err)
 		}
 		viewmodels = append(viewmodels, v)
@@ -354,82 +352,39 @@ func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
 	// 2) Para cada ViewModel, extraer nombre base y buscar archivos relacionados
 	fileToFeature := make(map[string]string)
 	for _, vm := range viewmodels {
-		// Extraer nombre base: CounterViewModel -> counter
-		base := strings.TrimSuffix(vm.Name, "ViewModel")
+		// Extraer nombre del archivo: CounterViewModel.kt -> CounterViewModel
+		fileName := filepath.Base(vm.Path)
+		fileName = strings.TrimSuffix(fileName, ".kt")
+		fileName = strings.TrimSuffix(fileName, ".java")
+
+		// Quitar "ViewModel" del nombre: CounterViewModel -> counter
+		base := strings.TrimSuffix(fileName, "ViewModel")
 		base = strings.TrimSuffix(base, "vm")
 		feature := strings.ToLower(base)
 		if feature == "" {
 			continue
 		}
 
-		dir := filepath.Dir(vm.Path)
-
-		// Buscar archivos en el mismo directorio
-		var relatedFiles []string
-		dirRows, err := s.db.Query(`
-			SELECT path FROM files WHERE path LIKE ? || '%'
-		`, dir)
+		// Buscar archivos cuyo nombre empiece con el nombre base
+		// (ej: CounterViewModel.kt, CounterEffect.kt, CounterEvent.kt -> feature "counter")
+		nameRows, err := s.db.Query(`
+			SELECT f.path FROM files f
+			WHERE LOWER(f.path) LIKE '%' || LOWER(?) || '%'
+		`, base)
 		if err != nil {
 			continue
 		}
-		for dirRows.Next() {
+		for nameRows.Next() {
 			var p string
-			if dirRows.Scan(&p) == nil {
-				if filepath.Dir(p) == dir {
-					relatedFiles = append(relatedFiles, p)
+			if nameRows.Scan(&p) == nil {
+				fName := strings.ToLower(filepath.Base(p))
+				baseLower := strings.ToLower(base)
+				if strings.HasPrefix(fName, baseLower) {
+					fileToFeature[p] = feature
 				}
 			}
 		}
-		dirRows.Close()
-
-		// Buscar archivos en el mismo paquete que contengan el nombre base
-		// (ej: CounterEffect.kt, CounterEvent.kt para feature "counter")
-		if vm.Package != "" {
-			pkgRows, err := s.db.Query(`
-				SELECT path FROM files WHERE package = ?
-			`, vm.Package)
-			if err == nil {
-				for pkgRows.Next() {
-					var p string
-					if pkgRows.Scan(&p) == nil {
-						fileName := strings.ToLower(filepath.Base(p))
-						if strings.Contains(fileName, strings.ToLower(base)) {
-							relatedFiles = append(relatedFiles, p)
-						}
-					}
-				}
-				pkgRows.Close()
-			}
-		}
-
-		// Buscar archivos cuyo nombre contenga el nombre base en cualquier parte
-		// del proyecto (ej: CounterEffect.kt en ui/ para feature "counter")
-		nameRows, err := s.db.Query(`
-			SELECT path FROM files WHERE LOWER(path) LIKE '%' || LOWER(?) || '%'
-		`, base)
-		if err == nil {
-			for nameRows.Next() {
-				var p string
-				if nameRows.Scan(&p) == nil {
-					fileName := strings.ToLower(filepath.Base(p))
-					baseLower := strings.ToLower(base)
-					// Solo archivos que empiecen con el nombre base (no matches parciales)
-					if strings.HasPrefix(fileName, baseLower) {
-						relatedFiles = append(relatedFiles, p)
-					}
-				}
-			}
-			nameRows.Close()
-		}
-
-		// Etiquetar archivos únicos
-		seen := make(map[string]bool)
-		for _, file := range relatedFiles {
-			if !seen[file] {
-				seen[file] = true
-				fileToFeature[file] = feature
-			}
-		}
+		nameRows.Close()
 	}
 
 	return fileToFeature, nil

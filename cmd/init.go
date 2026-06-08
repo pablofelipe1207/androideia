@@ -116,20 +116,7 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 		}
 
 		// ------------------------------------------------------------
-		// 3) Descubrimiento de features (heurístico, siempre corre)
-		//    Busca ViewModels en la DB, extrae nombre base y taguea
-		//    archivos relacionados.
-		// ------------------------------------------------------------
-		if !initNoIndex {
-			fmt.Println()
-			fmt.Println("→ Descubriendo features...")
-			if err := runFeatureDiscoverySilently(); err != nil {
-				fmt.Printf("  ⚠️  feature discovery falló: %v\n", err)
-			}
-		}
-
-		// ------------------------------------------------------------
-		// 4) Semántica (LLM classify + embeddings)
+		// 3) Semántica (LLM classify + embeddings)
 		// ------------------------------------------------------------
 		classifiedSomething := false
 		if !initNoSemantic {
@@ -143,6 +130,18 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 			}
 		} else {
 			fmt.Println("→ Saltando semantic index (--no-semantic)")
+		}
+
+		// ------------------------------------------------------------
+		// 4) Descubrimiento de features (heurístico sobre file_semantics)
+		//    Busca ViewModels clasificados por semantic y taguea archivos.
+		// ------------------------------------------------------------
+		if !initNoIndex {
+			fmt.Println()
+			fmt.Println("→ Descubriendo features...")
+			if err := runFeatureDiscoverySilently(); err != nil {
+				fmt.Printf("  ⚠️  feature discovery falló: %v\n", err)
+			}
 		}
 
 		// ------------------------------------------------------------
