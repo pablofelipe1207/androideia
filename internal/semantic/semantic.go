@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -314,151 +315,120 @@ type FeatureInfo struct {
 	Files       []string `json:"files"`
 }
 
-// DiscoverFeatures usa Ollama para analizar el código y descubrir
-// features del proyecto. Agrupa archivos/símbolos en features coherentes.
+// DiscoverFeatures busca ViewModels en la DB, extrae el nombre base
+// (quitando "ViewModel") y devuelve un mapa archivo→feature para todos
+// los archivos relacionados: los del mismo directorio Y los que contengan
+// el nombre base en su nombre de archivo dentro del mismo paquete.
+// No usa LLM — es 100% heurístico.
 func (s *Semantic) DiscoverFeatures() (map[string]string, error) {
-	// Obtener solo ViewModels y archivos relacionados (screen, usecase, repository, module, route)
-	mvvmKinds := []string{"viewmodel", "screen", "composable", "usecase", "repository", "module", "route", "activity", "fragment", "dao", "entity"}
-	placeholders := make([]string, len(mvvmKinds))
-	args := make([]interface{}, len(mvvmKinds))
-	for i, k := range mvvmKinds {
-		placeholders[i] = "?"
-		args[i] = k
-	}
-
-	query := fmt.Sprintf(`
-		SELECT DISTINCT f.path, f.package, f.module, f.layer,
-		       COALESCE(GROUP_CONCAT(s.name || ':' || s.kind, ';'), '') as symbols
-		FROM files f
-		LEFT JOIN symbols s ON s.file_id = f.id
-		WHERE s.kind IN (%s)
-		GROUP BY f.id, f.path, f.package, f.module, f.layer
-		ORDER BY f.path
-	`, strings.Join(placeholders, ","))
-
-	rows, err := s.db.Query(query, args...)
+	// 1) Buscar todos los símbolos de tipo viewmodel
+	rows, err := s.db.Query(`
+		SELECT s.name, f.path, f.package
+		FROM symbols s
+		JOIN files f ON f.id = s.file_id
+		WHERE s.kind = 'viewmodel'
+	`)
 	if err != nil {
-		return nil, fmt.Errorf("error querying files: %w", err)
+		return nil, fmt.Errorf("error querying viewmodels: %w", err)
 	}
 	defer rows.Close()
 
-	type FileInfo struct {
+	type vmInfo struct {
+		Name    string
 		Path    string
 		Package string
-		Module  string
-		Layer   string
-		Symbols string
 	}
-
-	var files []FileInfo
-	viewModelNames := []string{}
+	var viewmodels []vmInfo
 	for rows.Next() {
-		var fi FileInfo
-		if err := rows.Scan(&fi.Path, &fi.Package, &fi.Module, &fi.Layer, &fi.Symbols); err != nil {
-			return nil, fmt.Errorf("error scanning file: %w", err)
+		var v vmInfo
+		if err := rows.Scan(&v.Name, &v.Path, &v.Package); err != nil {
+			return nil, fmt.Errorf("error scanning viewmodel: %w", err)
 		}
-		files = append(files, fi)
-		
-		// Extraer nombres de ViewModel para pasarlos como pistas
-		if strings.Contains(fi.Symbols, "viewmodel") {
-			for _, sym := range strings.Split(fi.Symbols, ";") {
-				parts := strings.Split(sym, ":")
-				if len(parts) == 2 && parts[1] == "viewmodel" {
-					viewModelNames = append(viewModelNames, parts[0])
-				}
-			}
-		}
+		viewmodels = append(viewmodels, v)
 	}
 
-	if len(files) == 0 {
+	if len(viewmodels) == 0 {
 		return nil, nil
 	}
 
-	// Construir prompt para Ollama
-	var prompt strings.Builder
-	prompt.WriteString("Eres un experto en arquitectura Android (MVVM, Jetpack Compose, Hilt, Room).\n")
-	prompt.WriteString("Analiza este proyecto y agrupa los archivos en FEATURES (funcionalidades completas).\n\n")
-	
-	if len(viewModelNames) > 0 {
-		prompt.WriteString("VIEWMODELS DETECTADOS (usa estos nombres base para las features):\n")
-		for _, vm := range viewModelNames {
-			base := strings.TrimSuffix(vm, "ViewModel")
-			prompt.WriteString(fmt.Sprintf("- %s -> feature '%s'\n", vm, strings.ToLower(base)))
-		}
-		prompt.WriteString("\n")
-	}
-	
-	prompt.WriteString("REGLAS CRÍTICAS:\n")
-	prompt.WriteString("1. UNA feature = conjunto de archivos que pertenecen a la MISMA funcionalidad.\n")
-	prompt.WriteString("2. Nombra la feature usando EXACTAMENTE los nombres base de los ViewModels detectados arriba.\n")
-	prompt.WriteString("3. NO uses rutas de archivo como nombre de feature.\n")
-	prompt.WriteString("4. Agrupa todos los archivos relacionados (Screen, ViewModel, UseCase, Repository, Module, Route)\n")
-	prompt.WriteString("   bajo el nombre base del ViewModel correspondiente.\n\n")
-	prompt.WriteString("Devuelve SOLO JSON válido con este formato:\n")
-	prompt.WriteString(`{"features": [{"name": "nombreFeature", "description": "descripción breve", "files": ["ruta/archivo1.kt", "ruta/archivo2.kt"]}]}`)
-	prompt.WriteString("\n\n")
-	prompt.WriteString("Archivos con símbolos (filtrados capas MVVM):\n\n")
-
-	for _, fi := range files {
-		prompt.WriteString(fmt.Sprintf("Archivo: %s\n", fi.Path))
-		prompt.WriteString(fmt.Sprintf("  Paquete: %s\n", fi.Package))
-		prompt.WriteString(fmt.Sprintf("  Módulo: %s\n", fi.Module))
-		prompt.WriteString(fmt.Sprintf("  Capa: %s\n", fi.Layer))
-		if fi.Symbols != "" {
-			prompt.WriteString(fmt.Sprintf("  Símbolos: %s\n", fi.Symbols))
-		}
-		prompt.WriteString("\n")
-	}
-
-	// Llamar a Ollama chat API
-	request := map[string]interface{}{
-		"model":  s.model,
-		"prompt": prompt.String(),
-		"stream": false,
-		"format": "json",
-	}
-
-	jsonData, err := json.Marshal(request)
-	if err != nil {
-		return nil, fmt.Errorf("error marshaling request: %w", err)
-	}
-
-	resp, err := s.client.Post(s.ollamaURL+"/api/generate", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("error calling Ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Ollama returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parsear respuesta (Ollama devuelve JSON por líneas en streaming, pero con stream=false es un solo JSON)
-	var ollamaResp struct {
-		Response string `json:"response"`
-	}
-	if err := json.Unmarshal(body, &ollamaResp); err != nil {
-		return nil, fmt.Errorf("error unmarshaling Ollama response: %w", err)
-	}
-
-	// Parsear el JSON de la respuesta
-	var result struct {
-		Features []FeatureInfo `json:"features"`
-	}
-	if err := json.Unmarshal([]byte(ollamaResp.Response), &result); err != nil {
-		return nil, fmt.Errorf("error parsing features JSON: %w", err)
-	}
-
-	// Construir mapa archivo -> feature
+	// 2) Para cada ViewModel, extraer nombre base y buscar archivos relacionados
 	fileToFeature := make(map[string]string)
-	for _, feat := range result.Features {
-		for _, file := range feat.Files {
-			fileToFeature[file] = feat.Name
+	for _, vm := range viewmodels {
+		// Extraer nombre base: CounterViewModel -> counter
+		base := strings.TrimSuffix(vm.Name, "ViewModel")
+		base = strings.TrimSuffix(base, "vm")
+		feature := strings.ToLower(base)
+		if feature == "" {
+			continue
+		}
+
+		dir := filepath.Dir(vm.Path)
+
+		// Buscar archivos en el mismo directorio
+		var relatedFiles []string
+		dirRows, err := s.db.Query(`
+			SELECT path FROM files WHERE path LIKE ? || '%'
+		`, dir)
+		if err != nil {
+			continue
+		}
+		for dirRows.Next() {
+			var p string
+			if dirRows.Scan(&p) == nil {
+				if filepath.Dir(p) == dir {
+					relatedFiles = append(relatedFiles, p)
+				}
+			}
+		}
+		dirRows.Close()
+
+		// Buscar archivos en el mismo paquete que contengan el nombre base
+		// (ej: CounterEffect.kt, CounterEvent.kt para feature "counter")
+		if vm.Package != "" {
+			pkgRows, err := s.db.Query(`
+				SELECT path FROM files WHERE package = ?
+			`, vm.Package)
+			if err == nil {
+				for pkgRows.Next() {
+					var p string
+					if pkgRows.Scan(&p) == nil {
+						fileName := strings.ToLower(filepath.Base(p))
+						if strings.Contains(fileName, strings.ToLower(base)) {
+							relatedFiles = append(relatedFiles, p)
+						}
+					}
+				}
+				pkgRows.Close()
+			}
+		}
+
+		// Buscar archivos cuyo nombre contenga el nombre base en cualquier parte
+		// del proyecto (ej: CounterEffect.kt en ui/ para feature "counter")
+		nameRows, err := s.db.Query(`
+			SELECT path FROM files WHERE LOWER(path) LIKE '%' || LOWER(?) || '%'
+		`, base)
+		if err == nil {
+			for nameRows.Next() {
+				var p string
+				if nameRows.Scan(&p) == nil {
+					fileName := strings.ToLower(filepath.Base(p))
+					baseLower := strings.ToLower(base)
+					// Solo archivos que empiecen con el nombre base (no matches parciales)
+					if strings.HasPrefix(fileName, baseLower) {
+						relatedFiles = append(relatedFiles, p)
+					}
+				}
+			}
+			nameRows.Close()
+		}
+
+		// Etiquetar archivos únicos
+		seen := make(map[string]bool)
+		for _, file := range relatedFiles {
+			if !seen[file] {
+				seen[file] = true
+				fileToFeature[file] = feature
+			}
 		}
 	}
 

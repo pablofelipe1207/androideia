@@ -269,9 +269,13 @@ func runLLMFeatureDiscoverySilently() error {
 		return fmt.Errorf("failed to tag features: %w", err)
 	}
 
-	fmt.Printf("  LLM feature discovery: etiquetados %d símbolos en %d archivos\n", tagged, len(fileToFeature))
-	for feat := range fileToFeature {
-		fmt.Printf("    Descubierto feature: %s\n", feat)
+	fmt.Printf("  Feature discovery: etiquetados %d símbolos en %d archivos\n", tagged, len(fileToFeature))
+	features := make(map[string]bool)
+	for _, feat := range fileToFeature {
+		features[feat] = true
+	}
+	for feat := range features {
+		fmt.Printf("    Feature: %s\n", feat)
 	}
 
 	return nil
