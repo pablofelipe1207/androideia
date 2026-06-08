@@ -14,11 +14,9 @@ import (
 )
 
 var (
-	initNoIndex         bool
-	initNoSemantic      bool
-	initNoBrainSeed     bool
-	initNoLLMFeatures   bool
-	initWithLLMFeatures bool
+	initNoIndex     bool
+	initNoSemantic  bool
+	initNoBrainSeed bool
 )
 
 var initCmd = &cobra.Command{
@@ -28,10 +26,9 @@ var initCmd = &cobra.Command{
 de datos del proyecto. Por defecto, además:
 
   1. Construye el índice de código (androideai index build).
-  2. Si Ollama está disponible, corre la clasificación LLM de
+  2. Descubre features (busca ViewModels, extrae nombre base, taguea archivos).
+  3. Si Ollama está disponible, corre la clasificación LLM de
      archivos + embeddings (androideai semantic index).
-  3. Si Ollama está disponible y se pasa --with-llm-features,
-     descubre features con LLM (androideai index build --use-llm).
   4. Si la clasificación produjo convenciones, las guarda en el brain
      como entradas tipo "convention" para que el agente las use
      (brain_search "ViewModel convention", etc.).
@@ -39,7 +36,6 @@ de datos del proyecto. Por defecto, además:
 Flags:
   --no-index         Salta la construcción del índice de código.
   --no-semantic      Salta la clasificación LLM y los embeddings.
-  --no-llm-features  Salta el descubrimiento de features con LLM.
   --no-brain-seed    No siembra el brain con las convenciones detectadas.
 
 Si Ollama no está disponible, los pasos de LLM se omiten
@@ -120,7 +116,20 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 		}
 
 		// ------------------------------------------------------------
-		// 3) Semántica (LLM classify + embeddings)
+		// 3) Descubrimiento de features (heurístico, siempre corre)
+		//    Busca ViewModels en la DB, extrae nombre base y taguea
+		//    archivos relacionados.
+		// ------------------------------------------------------------
+		if !initNoIndex {
+			fmt.Println()
+			fmt.Println("→ Descubriendo features...")
+			if err := runFeatureDiscoverySilently(); err != nil {
+				fmt.Printf("  ⚠️  feature discovery falló: %v\n", err)
+			}
+		}
+
+		// ------------------------------------------------------------
+		// 4) Semántica (LLM classify + embeddings)
 		// ------------------------------------------------------------
 		classifiedSomething := false
 		if !initNoSemantic {
@@ -134,21 +143,6 @@ silenciosamente (con un aviso) y el resto del init sigue.`,
 			}
 		} else {
 			fmt.Println("→ Saltando semantic index (--no-semantic)")
-		}
-
-		// ------------------------------------------------------------
-		// 4) Descubrimiento de features con LLM (opcional, --with-llm-features)
-		//    Requiere que el índice semántico haya corrido primero para
-		//    tener los ViewModels y archivos clasificados en la DB.
-		// ------------------------------------------------------------
-		if initWithLLMFeatures {
-			fmt.Println()
-			fmt.Println("→ Descubriendo features con LLM (Ollama)...")
-			if err := runLLMFeatureDiscoverySilently(); err != nil {
-				fmt.Printf("  ⚠️  LLM feature discovery falló: %v\n", err)
-			}
-		} else {
-			fmt.Println("→ Saltando descubrimiento LLM de features (usa --with-llm-features para habilitar)")
 		}
 
 		// ------------------------------------------------------------
@@ -197,49 +191,10 @@ func runIndexBuildSilently() error {
 	return indexBuildCmd.RunE(indexBuildCmd, nil)
 }
 
-// runLLMFeatureDiscoverySilently descubre features usando LLM
-// sobre el índice YA CONSTRUIDO (no re-indexa).
-func runLLMFeatureDiscoverySilently() error {
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if cfg.Provider == "ollama" {
-		if _, _, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.EffectiveOllamaModel()); err != nil {
-			fmt.Printf("  ⚠️  Ollama no disponible en %s; se omite descubrimiento de features.\n", cfg.OllamaURL)
-			return nil
-		}
-	}
-
-	mc, _, err := config.LoadModelsConfig()
-	if err != nil {
-		return fmt.Errorf("load models config: %w", err)
-	}
-	if mc.Semantic.Provider != "ollama" {
-		fmt.Println("  Semantic provider no es Ollama; se omite descubrimiento LLM.")
-		return nil
-	}
-
-	baseURL := mc.Semantic.BaseURL
-	if baseURL == "" {
-		baseURL = "http://localhost:11434"
-	}
-
-	// Auto-resolver el modelo igual que en semantic index
-	model := mc.Semantic.ChatModel
-	if model == "" {
-		model = cfg.EffectiveOllamaModel()
-	}
-	resolved, autoSelected, err := llm.ResolveOllamaModel(baseURL, model)
-	if err != nil {
-		fmt.Printf("  ⚠️  No se pudo resolver modelo Ollama: %v\n", err)
-		return nil
-	}
-	if autoSelected {
-		fmt.Printf("  Ollama tiene un solo modelo; usando %s (config tenía %s)\n", resolved, model)
-	}
-	model = resolved
-
+// runFeatureDiscoverySilently descubre features usando el heuristic
+// (busca ViewModels en la DB, extrae nombre base, taguea archivos relacionados).
+// No necesita LLM — es 100% heurístico.
+func runFeatureDiscoverySilently() error {
 	dbPath := filepath.Join(".androideai", "core.db")
 	s, err := store.NewStore(dbPath)
 	if err != nil {
@@ -247,20 +202,14 @@ func runLLMFeatureDiscoverySilently() error {
 	}
 	defer s.Close()
 
-	sem := semantic.NewSemantic(s.DB(), baseURL, model)
-	if !sem.IsAvailable() {
-		fmt.Println("  Ollama no disponible; se omite descubrimiento de features.")
-		return nil
-	}
-
-	fmt.Println("  Analizando archivos con LLM para detectar features MVVM...")
+	sem := semantic.NewSemantic(s.DB(), "", "")
 	fileToFeature, err := sem.DiscoverFeatures()
 	if err != nil {
-		return fmt.Errorf("LLM feature discovery failed: %w", err)
+		return fmt.Errorf("feature discovery failed: %w", err)
 	}
 
 	if len(fileToFeature) == 0 {
-		fmt.Println("  No se detectaron features nuevas (quizás el proyecto está vacío o no sigue patrones MVVM)")
+		fmt.Println("  No se detectaron features (no se encontraron ViewModels)")
 		return nil
 	}
 
@@ -269,13 +218,13 @@ func runLLMFeatureDiscoverySilently() error {
 		return fmt.Errorf("failed to tag features: %w", err)
 	}
 
-	fmt.Printf("  Feature discovery: etiquetados %d símbolos en %d archivos\n", tagged, len(fileToFeature))
+	fmt.Printf("  Features descubiertas: %d archivos, %d símbolos etiquetados\n", len(fileToFeature), tagged)
 	features := make(map[string]bool)
 	for _, feat := range fileToFeature {
 		features[feat] = true
 	}
 	for feat := range features {
-		fmt.Printf("    Feature: %s\n", feat)
+		fmt.Printf("    → %s\n", feat)
 	}
 
 	return nil
@@ -398,7 +347,5 @@ func seedBrainFromSemantic() error {
 func init() {
 	initCmd.Flags().BoolVar(&initNoIndex, "no-index", false, "Saltar la construcción del índice de código")
 	initCmd.Flags().BoolVar(&initNoSemantic, "no-semantic", false, "Saltar la clasificación LLM y los embeddings")
-	initCmd.Flags().BoolVar(&initNoLLMFeatures, "no-llm-features", false, "Saltar el descubrimiento de features con LLM")
-	initCmd.Flags().BoolVar(&initWithLLMFeatures, "with-llm-features", false, "Habilitar descubrimiento de features con LLM (requiere Ollama con modelo capaz)")
 	initCmd.Flags().BoolVar(&initNoBrainSeed, "no-brain-seed", false, "No sembrar el brain con las convenciones detectadas")
 }
