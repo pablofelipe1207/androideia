@@ -56,7 +56,7 @@ var featureListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dbPath := filepath.Join(".androideai", "core.db")
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-			return fmt.Errorf("database not found, run 'androideai index build' first")
+			return fmt.Errorf("database not found, run 'androideai init' first")
 		}
 
 		s, err := store.NewStore(dbPath)
@@ -65,33 +65,57 @@ var featureListCmd = &cobra.Command{
 		}
 		defer s.Close()
 
+		// Buscar viewmodels en file_semantics y extraer nombre base
 		rows, err := s.DB().Query(`
-			SELECT DISTINCT feature, COUNT(*) as count
-			FROM symbols
-			WHERE feature != '' AND feature IS NOT NULL
-			GROUP BY feature
-			ORDER BY count DESC
+			SELECT f.path
+			FROM file_semantics fs
+			JOIN files f ON f.id = fs.file_id
+			WHERE fs.type = 'viewmodel'
 		`)
 		if err != nil {
 			return fmt.Errorf("error querying features: %w", err)
 		}
 		defer rows.Close()
 
+		features := make(map[string]int)
+		for rows.Next() {
+			var path string
+			if err := rows.Scan(&path); err != nil {
+				continue
+			}
+			// Extraer nombre del archivo: CounterViewModel.kt -> counter
+			base := filepath.Base(path)
+			base = strings.TrimSuffix(base, ".kt")
+			base = strings.TrimSuffix(base, ".java")
+			base = strings.TrimSuffix(base, "ViewModel")
+			base = strings.TrimSuffix(base, "vm")
+			feature := strings.ToLower(base)
+			if feature == "" {
+				continue
+			}
+			features[feature]++
+		}
+
+		// Contar archivos relacionados por cada feature
+		for feat := range features {
+			var count int
+			s.DB().QueryRow(`
+				SELECT COUNT(*) FROM files
+				WHERE LOWER(path) LIKE '%' || ? || '%'
+			`, feat).Scan(&count)
+			features[feat] = count
+		}
+
 		fmt.Println("Features descubiertas:")
 		fmt.Println(strings.Repeat("─", 50))
 		found := false
-		for rows.Next() {
-			var featureName string
-			var count int
-			if err := rows.Scan(&featureName, &count); err != nil {
-				continue
-			}
+		for feat, count := range features {
 			found = true
-			fmt.Printf("  %s (%d símbolos)\n", featureName, count)
+			fmt.Printf("  %s (%d archivos)\n", feat, count)
 		}
 		if !found {
 			fmt.Println("  (ninguna feature etiquetada aún)")
-			fmt.Println("  Ejecuta 'androideai index build' para auto-etiquetar")
+			fmt.Println("  Ejecuta 'androideai init' para descubrir features")
 		}
 
 		return nil
