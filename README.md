@@ -1,4 +1,4 @@
-# androideai-core
+# androideai-core v1.0.0
 
 Offline-first AI agent for Android development with semantic code exploration, official Android skills, and automatic knowledge storage.
 
@@ -81,6 +81,9 @@ make build-full
 ## Quick Start
 
 ```bash
+# Check the installed version
+androideai version
+
 # Initialize a project (also runs index build, semantic index, and
 # seeds the brain with detected conventions — see "What init does").
 androideai init
@@ -119,6 +122,21 @@ androideai agent --resume 1 "now add unit tests for the ViewModel"
 - **Modular Skills**: Skills activate automatically based on triggers (Compose, Hilt, Room, Navigation)
 - **Session Summaries**: Old sessions are compressed to summaries, saving tokens on resume
 - **Semantic-Brain Sync**: Conventions from semantic index are automatically synced to brain after each session
+
+## Version
+
+androideai-core v1.0.0
+
+Check the installed version:
+
+```bash
+androideai version
+# Output:
+# androideai-core v1.0.0
+#   Go: go1.26.4 | OS: darwin | Arch: arm64
+```
+
+The version is embedded at build time via `-ldflags`. When building from source with `make build`, the version is automatically set from `Makefile` variables.
 
 ## Agent Commands
 
@@ -1130,9 +1148,9 @@ automatically (see the table above).
 ## Requirements
 
 - Go 1.22+ (for building from source)
-- Ollama running locally (for AI agent)
 - Android SDK (for emulator operations) - automatically detected or installed
 - No runtime dependencies (single binary)
+- Ollama (optional, only needed if you want local embeddings)
 
 ### Android SDK Setup
 

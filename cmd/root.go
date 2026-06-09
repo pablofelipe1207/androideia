@@ -4,17 +4,13 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/pablofelipe1207/androideia/internal/version"
 	"github.com/spf13/cobra"
-)
-
-var (
-	Version   = "dev"
-	BuildTime = "unknown"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "androideai",
-	Short: "androideai-core es un agente de desarrollo Android offline-first",
+	Short: "androideai-core v" + version.Version + " — agente de desarrollo Android offline-first",
 	Long:  `Un CLI independiente en Go que actúa como agente de desarrollo Android offline-first con índice SQLite, memoria de proyecto, ops Gradle/adb, loop de agente con Ollama, y skills extensibles.`,
 }
 
@@ -22,8 +18,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Muestra la versión de androideai",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("androideai %s\n", Version)
-		fmt.Printf("Build: %s\n", BuildTime)
+		version.Banner()
 	},
 }
 
@@ -51,4 +46,6 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(modelsCmd)
 	rootCmd.AddCommand(memoryCmd)
+	rootCmd.AddCommand(interviewCmd)
+	rootCmd.AddCommand(taskCmd)
 }

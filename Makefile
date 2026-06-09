@@ -2,9 +2,10 @@
 
 # Variables
 BINARY=androideai
-VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION=1.0.0
+GIT_COMMIT=$(shell git describe --tags --always --dirty 2>/dev/null || echo "unknown")
 BUILD_TIME=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-LDFLAGS=-ldflags "-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}"
+LDFLAGS=-ldflags "-s -w -X main.v=${VERSION} -X main.commit=${GIT_COMMIT} -X main.buildTime=${BUILD_TIME} -X github.com/pablofelipe1207/androideia/internal/version.Version=${VERSION} -X github.com/pablofelipe1207/androideia/internal/version.GitCommit=${GIT_COMMIT} -X github.com/pablofelipe1207/androideia/internal/version.BuildDate=${BUILD_TIME}"
 INSTALL_DIR=$(HOME)/.local/bin
 
 # Default target

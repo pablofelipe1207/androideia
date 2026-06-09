@@ -9,6 +9,7 @@ BINARY="androideai"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 ANDROID_SDK_DIR="${ANDROID_SDK_DIR:-$HOME/Android/Sdk}"
 ANDROID_CMDLINE_TOOLS_VERSION="11076708"
+ANDROIDIAI_VERSION="1.0.0"
 
 # Detect OS and architecture
 detect_platform() {
@@ -401,14 +402,20 @@ install_global_config() {
 
     mkdir -p "$GLOBAL_DIR"
 
-    if [ -f "$GLOBAL_CONFIG" ]; then
-        echo "Global config already exists at: $GLOBAL_CONFIG (skipping)"
-    else
+    if [ "$INSTALL_OLLAMA" = "true" ]; then
+        # Con --with-ollama: forzar config con Ollama
         cat > "$GLOBAL_CONFIG" << EOF
 # androideai-core global configuration (legacy / fallback format)
 # Prefer editing models.yml para configurar providers y modelos.
-# Este archivo se mantiene por compat: contiene approval, timeout y
-# un fallback de los campos de modelo (sync automático desde models.yml).
+model: qwen2.5:1.5b
+provider: ollama
+approval: ask
+EOF
+    else
+        # Sin --with-ollama: SIEMPRE forzar Mimo (default)
+        cat > "$GLOBAL_CONFIG" << EOF
+# androideai-core global configuration (legacy / fallback format)
+# Prefer editing models.yml para configurar providers y modelos.
 model: mimo-v2.5-free
 provider: opencode_zen
 approval: ask
@@ -417,12 +424,9 @@ EOF
 
     # Crear también models.yml (nuevo formato) con defaults sensatos.
     local MODELS_CONFIG="$GLOBAL_DIR/models.yml"
-    if [ -f "$MODELS_CONFIG" ]; then
-        echo "Global models config already exists at: $MODELS_CONFIG (skipping)"
-    else
-        if [ "$INSTALL_OLLAMA" = "true" ]; then
-            # Configuración con Ollama para semantic
-            cat > "$MODELS_CONFIG" << EOF
+    if [ "$INSTALL_OLLAMA" = "true" ]; then
+        # Con --with-ollama: forzar config con Ollama para semantic
+        cat > "$MODELS_CONFIG" << EOF
 # androideai-core — model configuration
 # Editá a mano o usá 'androideai models set <seccion.campo> <valor> --global'.
 # Defaults: agent con OpenCode Zen (free, sin key) y semantic con Ollama local.
@@ -435,9 +439,10 @@ semantic:
   chat_model: qwen2.5:1.5b
   embedding_model: nomic-embed-text
 EOF
-        else
-            # Configuración por defecto: todo con Mimo (sin Ollama)
-            cat > "$MODELS_CONFIG" << EOF
+        echo "Created/updated models config with Ollama: $MODELS_CONFIG"
+    else
+        # Sin --with-ollama: SIEMPRE forzar Mimo (default)
+        cat > "$MODELS_CONFIG" << EOF
 # androideai-core — model configuration
 # Editá a mano o usá 'androideai models set <seccion.campo> <valor> --global'.
 # Defaults: agent y semantic usan OpenCode Zen (Mimo V2.5 Free).
@@ -451,8 +456,7 @@ semantic:
   chat_model: mimo-v2.5-free
   embedding_model: ""
 EOF
-        fi
-        echo "Created global models config: $MODELS_CONFIG"
+        echo "Created/updated models config with Mimo V2.5 Free: $MODELS_CONFIG"
     fi
 
     echo "Created global config at: $GLOBAL_CONFIG"
@@ -476,7 +480,7 @@ uninstall() {
 print_summary() {
     echo ""
     echo "=========================================="
-    echo "  Installation Summary"
+    echo "  androideai-core v$ANDROIDIAI_VERSION — Installation Complete"
     echo "=========================================="
     echo ""
     echo "Binary: $INSTALL_DIR/$BINARY"
