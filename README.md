@@ -2,6 +2,8 @@
 
 Offline-first AI agent for Android development with semantic code exploration, official Android skills, and automatic knowledge storage.
 
+**No external dependencies required** — uses OpenCode Zen (Mimo V2.5 Free) for both agent chat and semantic code classification. Ollama is optional for local embeddings.
+
 ## Installation
 
 ### Quick Install (Linux/macOS)
@@ -9,6 +11,44 @@ Offline-first AI agent for Android development with semantic code exploration, o
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pablofelipe1207/androideia/main/install.sh | bash
 ```
+
+This installs androideai-core with Mimo V2.5 Free (no API key required, no Ollama needed).
+
+### Install options
+
+| Flag | Description |
+|------|-------------|
+| `--with-ollama` | Also install Ollama and pull `nomic-embed-text` + `qwen2.5:1.5b` for local embeddings and file classification |
+| `install` | Default action: install the binary to `~/.local/bin` |
+| `uninstall` | Remove the binary and config files |
+| `from-source` | Build from source (requires Go 1.22+) |
+| `sdk` | Install Android SDK components (platform-tools, build-tools) |
+
+### With Ollama (optional, for local embeddings)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pablofelipe1207/androideia/main/install.sh | bash -s -- --with-ollama
+```
+
+This also installs Ollama and pulls a lightweight model for local embeddings and file classification. The `models.yml` is configured to use Ollama for the semantic index:
+
+```yaml
+agent:
+  provider: opencode_zen
+  model: mimo-v2.5-free
+
+semantic:
+  provider: ollama
+  base_url: http://localhost:11434
+  chat_model: qwen2.5:1.5b
+  embedding_model: nomic-embed-text
+```
+
+**When to use `--with-ollama`:**
+- You want faster file classification (local LLM vs API calls)
+- You need vector embeddings for semantic search (FTS is used without Ollama)
+- You want everything to work fully offline
+- You have a machine with enough RAM for the models (~2GB for both)
 
 ### Using Make
 
@@ -72,6 +112,8 @@ androideai agent --resume 1 "now add unit tests for the ViewModel"
 - **Official Android Skills**: Import and use skills from https://github.com/android/skills
 - **Automatic Knowledge Storage**: Agent stores knowledge when tasks complete successfully
 - **Context-Aware Agent**: Searches knowledge base before executing tasks
+- **Interview Mode**: Practice Android technical interviews with 40+ curated questions, scoring, and history tracking
+- **Task Queue Manager**: Manage and process tasks by priority with LLM-powered execution
 
 ## Agent Commands
 
@@ -91,6 +133,138 @@ androideai agent "Refactor the auth flow" --model qwen2.5-coder:7b
 # Resume a previous conversation (see "Agent Memory" below)
 androideai agent --resume 7 "now add the forgot-password screen"
 ```
+
+## Interview Mode
+
+Practice Android technical interviews with AI-generated questions. The system uses a question bank of 40+ curated questions and can generate additional questions using the configured LLM.
+
+```bash
+# Start a general interview (10 questions)
+androideai interview
+
+# Filter by category
+androideai interview --category compose
+androideai interview --category architecture
+androideai interview --category di
+androideai interview --category async
+androideai interview --category storage
+androideai interview --category navigation
+androideai interview --category testing
+
+# Filter by difficulty
+androideai interview --difficulty easy
+androideai interview --difficulty medium
+androideai interview --difficulty hard
+
+# Combine filters
+androideai interview --category compose --difficulty hard --count 5
+
+# View history
+androideai interview history
+
+# List available categories and difficulties
+androideai interview categories
+androideai interview difficulties
+```
+
+### Interview Features
+
+- **Immediate feedback**: After each answer, you get an explanation of the correct answer
+- **Score tracking**: Final score with grade (A+, A, B, C, D, F) and per-category breakdown
+- **Weak areas identification**: The system identifies your weak areas for focused study
+- **LLM-generated questions**: Optionally generates additional questions using the configured LLM
+- **History persistence**: All interviews are saved to the database for tracking progress
+
+### Categories
+
+| Category | Topics |
+|----------|--------|
+| `compose` | Jetpack Compose, State, Effects, Recomposition |
+| `architecture` | MVVM, MVI, Clean Architecture, Repository pattern |
+| `di` | Hilt, Dagger, Dependency Injection |
+| `async` | Coroutines, Flow, StateFlow, SharedFlow, Dispatchers |
+| `storage` | Room, DataStore, SharedPreferences |
+| `navigation` | Navigation Compose, Routes, Arguments |
+| `testing` | JUnit, Espresso, Mockk, Turbine |
+
+## Task Queue
+
+Manage a queue of tasks for the agent to process. Tasks are processed by priority (urgent > high > medium > low).
+
+```bash
+# Add tasks
+androideai task add "Implement login screen" --priority high --type feature
+androideai task add "Fix crash on home" -p urgent -t bugfix -d "NullPointerException in HomeViewModel"
+androideai task add "Add unit tests" -t test -p medium
+
+# List tasks
+androideai task list                    # All tasks
+androideai task list --status pending   # Filter by status
+androideai task list --status queued    # Only queued tasks
+
+# View task details
+androideai task show 1
+
+# Update tasks
+androideai task update 1 --status queued
+androideai task update 1 --priority urgent
+androideai task update 1 --title "New title" --description "New description"
+
+# Delete/Cancel tasks
+androideai task delete 1
+androideai task cancel 1
+
+# Queue management
+androideai task queue                   # View queued tasks
+androideai task stats                   # Queue statistics
+androideai task clear --type completed  # Clear completed tasks
+androideai task clear --type all        # Clear completed + cancelled
+
+# Process tasks
+androideai task process                 # Process next task in queue
+androideai task process --all           # Process all queued tasks
+androideai task process --model qwen2.5-coder:7b  # Override model
+```
+
+### Task Priorities
+
+| Priority | Value | Processing Order |
+|----------|-------|------------------|
+| `urgent` | 3 | Processed first |
+| `high` | 2 | Second |
+| `medium` | 1 | Third |
+| `low` | 0 | Processed last |
+
+### Task Status
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Task created, not yet queued |
+| `queued` | Ready to be processed |
+| `processing` | Currently being processed by the agent |
+| `completed` | Task finished successfully |
+| `failed` | Task failed during processing |
+| `cancelled` | Task was cancelled |
+
+### Task Types
+
+| Type | Description |
+|------|-------------|
+| `feature` | New feature implementation |
+| `bugfix` | Bug fix |
+| `refactor` | Code refactoring |
+| `test` | Test creation |
+| `review` | Code review |
+
+### Processing with LLM
+
+When you run `task process`, the system:
+
+1. Gets the next task from the queue (highest priority first)
+2. Marks it as `processing`
+3. Uses the configured LLM to execute the task
+4. Creates a conversation in memory for tracking
+5. Stores the result and marks as `completed` or `failed`
 
 ### Confirmations
 
@@ -331,9 +505,7 @@ androideai android test --unit
 The semantic module keeps **two complementary indexes** for every Android
 project:
 
-1. **Symbol embeddings** (the original behavior) — every Kotlin symbol
-   gets a vector so you can search code by meaning.
-2. **LLM file classification** — for every `.kt`/`.kts` file the LLM
+1. **LLM file classification** — for every `.kt`/`.kts` file the LLM
    produces a structured record with:
    - `type` (`viewmodel`, `activity`, `composable`, `usecase`,
      `repository`, `dao`, `di_module`, `nav_route`, `data_class`,
@@ -344,11 +516,48 @@ project:
    - `conventions` (how files of that role are written in THIS project:
      DI style, state holder, async pattern, etc.)
    - `summary` (one-sentence purpose)
+2. **Symbol embeddings** (optional, requires Ollama) — every Kotlin symbol
+   gets a vector so you can search code by meaning.
 
 The agent queries this index with the `semantic_locate` tool *before*
 creating any new file, so it never reinvents a pattern that already
 exists, and never collides with a class/module that the project
 already has.
+
+### Default Setup (No Ollama Required)
+
+By default, androideai-core uses **Mimo V2.5 Free** via OpenCode Zen for
+file classification. No local LLM or API key is needed:
+
+```yaml
+# ~/.androideai/models.yml
+agent:
+  provider: opencode_zen
+  model: mimo-v2.5-free
+
+semantic:
+  provider: opencode_zen
+  chat_model: mimo-v2.5-free
+  embedding_model: ""  # No embeddings, uses FTS for search
+```
+
+### With Ollama (Optional)
+
+If you installed with `--with-ollama`, the semantic flow uses local
+Ollama for faster classification and embeddings:
+
+```yaml
+# ~/.androideai/models.yml
+agent:
+  provider: opencode_zen
+  model: mimo-v2.5-free
+
+semantic:
+  provider: ollama
+  base_url: http://localhost:11434
+  chat_model: qwen2.5:1.5b
+  embedding_model: nomic-embed-text
+```
 
 ```bash
 # Check the index status (classified files, architecture, top types)
@@ -548,8 +757,8 @@ for `approval`, `timeout`, and as a fallback for older callers.
 
 This is the file you should edit when you install androideai-core in
 a new environment. It has two top-level sections: `agent` (the LLM
-that the agent loop talks to) and `semantic` (the LLM + embeddings
-used by `androideai semantic index` and `androideai init`).
+that the agent loop talks to) and `semantic` (the LLM used by
+`androideai semantic index` and `androideai init`).
 
 ```yaml
 # ~/.androideai/models.yml
@@ -558,7 +767,7 @@ agent:
   provider: opencode_zen
 
   # Model (provider-specific)
-  model: minimax-m3-free
+  model: mimo-v2.5-free
 
   # Optional: override the base URL (default depends on provider)
   # base_url: https://opencode.ai/zen/v1
@@ -568,32 +777,29 @@ agent:
   # api_key_env: OPENCODE_ZEN_API_KEY
 
 semantic:
-  # Only "ollama" is supported here (it's the only provider with
-  # embeddings implemented). If you want to use another provider for
-  # semantic, leave this on Ollama and point the agent to the other
-  # provider in the `agent` block above.
-  provider: ollama
+  # Provider: ollama | opencode_zen | openai
+  # Default: opencode_zen (uses Mimo, no Ollama required)
+  provider: opencode_zen
 
-  # Where Ollama is listening
-  base_url: http://localhost:11434
+  # Model used for file classification
+  # Default: mimo-v2.5-free (via OpenCode Zen)
+  chat_model: mimo-v2.5-free
 
-  # Model used for file classification (LLM call to Ollama)
-  chat_model: qwen2.5-coder:7b
+  # Optional: Ollama base URL (only needed if provider is "ollama")
+  # base_url: http://localhost:11434
 
-  # Model used for embeddings
-  embedding_model: nomic-embed-text
+  # Optional: Model for embeddings (only needed for vector search)
+  # If empty, uses FTS (full-text search) instead of embeddings
+  # embedding_model: nomic-embed-text
 ```
 
-Defaults are sensible for a fresh install: the agent talks to
-OpenCode Zen (free tier, no API key) and the semantic flow uses a
-local Ollama. This hybrid avoids both the cost of cloud chat and
-the cost of cloud embeddings.
+**Default setup**: Both agent and semantic use Mimo V2.5 Free via
+OpenCode Zen. No API key required, no Ollama needed. The semantic
+index uses FTS (full-text search) for code lookup, which is fast
+and works offline.
 
-To pull the embedding model locally:
-
-```bash
-ollama pull nomic-embed-text
-```
+**With Ollama**: If you want local embeddings and faster classification,
+install with `--with-ollama` and set the semantic provider to `ollama`.
 
 ### Managing models from the CLI
 
@@ -629,10 +835,8 @@ commands:
 
 ```yaml
 # ~/.androideai/config.yml
-model: qwen3-coder-64k-32k:latest
-ollama_url: http://localhost:11434
-ollama_model: ""  # optional: model for Ollama-side ops (classify/embed). Falls back to `model` if empty.
-provider: ollama   # ollama | anthropic | openai | opencode_zen
+model: mimo-v2.5-free
+provider: opencode_zen
 approval: ask      # ask | auto | never
 timeout: 300       # seconds per LLM call; raise this for slow models / long contexts
 ```
@@ -641,31 +845,35 @@ timeout: 300       # seconds per LLM call; raise this for slow models / long con
 
 | Provider | What it is | Setup |
 |----------|------------|-------|
-| `ollama` (default) | Local LLM via Ollama. Free, private, works offline. | Install [Ollama](https://ollama.com), pull a model, leave the defaults. |
+| `opencode_zen` (default) | [OpenCode Zen](https://opencode.ai/zen), a hosted gateway with a free tier. | No API key required for free tier. Optionally set `OPENCODE_ZEN_API_KEY`. |
+| `ollama` | Local LLM via Ollama. Free, private, works offline. | Install [Ollama](https://ollama.com) with `--with-ollama`, pull a model. |
 | `anthropic` | Anthropic Claude API. | Set `ANTHROPIC_API_KEY` env var. |
 | `openai` | OpenAI Chat Completions API. | Set `OPENAI_API_KEY` env var. |
-| `opencode_zen` | [OpenCode Zen](https://opencode.ai/zen), a hosted gateway with a free tier. | Optional `OPENCODE_ZEN_API_KEY` env var (free tier doesn't need one). Optionally override the endpoint with `OPENCODE_ZEN_BASE_URL`. |
 
-#### OpenCode Zen (free tier, no API key required)
+#### OpenCode Zen (default, free tier, no API key required)
 
 [OpenCode Zen](https://opencode.ai/zen) is a curated model gateway from the
-OpenCode team. The free tier includes models like `minimax-m3-free`,
-`glm-4.7-free`, `kimi-k2.5-free`, `gpt-5-nano`, `deepseek-v4-flash-free`
-etc. with no API key required. See the [full model list](https://opencode.ai/zen/v1/models).
+OpenCode team. The free tier includes models like `mimo-v2.5-free`,
+`minimax-m3-free`, `glm-4.7-free`, `kimi-k2.5-free`, `gpt-5-nano`,
+`deepseek-v4-flash-free` etc. with no API key required.
+See the [full model list](https://opencode.ai/zen/v1/models).
 
 The API is OpenAI-compatible, so androideai-core talks to it with
 the standard `POST /v1/chat/completions` shape.
 
-**Hybrid setup (recommended):** use OpenCode Zen for the agent's
-chat and keep Ollama local for embeddings and file classification
-(Ollama is fast and free for those).
+**Default setup (no Ollama needed):** Both agent and semantic use
+Mimo V2.5 Free via OpenCode Zen. No local LLM required.
 
 ```yaml
-# .androideai/config.yml
-provider: opencode_zen
-model: minimax-m3-free           # chat model (OpenCode Zen)
-ollama_model: qwen2.5-coder:7b   # file classification (Ollama)
-ollama_url: http://localhost:11434
+# ~/.androideai/models.yml
+agent:
+  provider: opencode_zen
+  model: mimo-v2.5-free
+
+semantic:
+  provider: opencode_zen
+  chat_model: mimo-v2.5-free
+  embedding_model: ""  # Uses FTS for search
 ```
 
 Optional environment variables:
@@ -675,12 +883,26 @@ Optional environment variables:
 - `OPENCODE_ZEN_BASE_URL` — override the endpoint (defaults to
   `https://opencode.ai/zen/v1`). Useful for self-hosted gateways.
 
-**Note on embeddings:** OpenCode Zen does not currently expose
-embedding models in its catalog, so the `semantic index` step
-(clasificación + embeddings) still uses Ollama. The agent's chat uses
-Zen. If you switch to a provider that does support embeddings
-end-to-end, the hybrid setup above will continue to work because
-`ollama_model` and `model` are separate.
+#### With Ollama (optional, for local embeddings)
+
+If you installed with `--with-ollama`, you can use Ollama for faster
+classification and local embeddings:
+
+```yaml
+# ~/.androideai/models.yml
+agent:
+  provider: opencode_zen
+  model: mimo-v2.5-free
+
+semantic:
+  provider: ollama
+  base_url: http://localhost:11434
+  chat_model: qwen2.5:1.5b
+  embedding_model: nomic-embed-text
+```
+
+This hybrid setup uses OpenCode Zen for the agent's chat and Ollama
+for semantic indexing (embeddings + file classification).
 
 ### Managing config with the CLI
 

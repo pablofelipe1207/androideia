@@ -147,6 +147,37 @@ func (s *Store) migrate() error {
 			created_at INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id)`,
+
+		// Historial de entrevistas
+		`CREATE TABLE IF NOT EXISTS interview_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task TEXT,
+			score TEXT,
+			total INTEGER,
+			correct INTEGER,
+			percentage REAL,
+			grade TEXT,
+			category TEXT,
+			difficulty TEXT,
+			created_at INTEGER
+		)`,
+
+		// Gestor de tareas (task queue)
+		`CREATE TABLE IF NOT EXISTS tasks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL,
+			description TEXT,
+			priority INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'pending',
+			type TEXT,
+			result TEXT,
+			error TEXT,
+			conversation_id INTEGER,
+			created_at INTEGER,
+			updated_at INTEGER,
+			started_at INTEGER,
+			completed_at INTEGER
+		)`,
 	}
 
 	for _, m := range migrations {

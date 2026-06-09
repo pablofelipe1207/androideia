@@ -350,8 +350,16 @@ install_from_source() {
     echo "Binary installed to: $INSTALL_DIR/$BINARY"
 }
 
-# Check and install Ollama (macOS) and pull a lightweight model
+# Check and install Ollama (optional, only if --with-ollama flag is passed)
 install_ollama() {
+    if [ "$INSTALL_OLLAMA" != "true" ]; then
+        echo ""
+        echo "Ollama is optional. Skipping Ollama installation."
+        echo "Semantic index will use OpenCode Zen (Mimo V2.5 Free) instead."
+        echo "To install Ollama later, run: $0 --with-ollama"
+        return
+    fi
+
     echo ""
     echo "Checking Ollama..."
 
@@ -401,9 +409,8 @@ install_global_config() {
 # Prefer editing models.yml para configurar providers y modelos.
 # Este archivo se mantiene por compat: contiene approval, timeout y
 # un fallback de los campos de modelo (sync automático desde models.yml).
-model: qwen2.5:1.5b
-ollama_url: http://localhost:11434
-provider: ollama
+model: mimo-v2.5-free
+provider: opencode_zen
 approval: ask
 EOF
     fi
@@ -413,7 +420,9 @@ EOF
     if [ -f "$MODELS_CONFIG" ]; then
         echo "Global models config already exists at: $MODELS_CONFIG (skipping)"
     else
-        cat > "$MODELS_CONFIG" << EOF
+        if [ "$INSTALL_OLLAMA" = "true" ]; then
+            # Configuración con Ollama para semantic
+            cat > "$MODELS_CONFIG" << EOF
 # androideai-core — model configuration
 # Editá a mano o usá 'androideai models set <seccion.campo> <valor> --global'.
 # Defaults: agent con OpenCode Zen (free, sin key) y semantic con Ollama local.
@@ -426,6 +435,23 @@ semantic:
   chat_model: qwen2.5:1.5b
   embedding_model: nomic-embed-text
 EOF
+        else
+            # Configuración por defecto: todo con Mimo (sin Ollama)
+            cat > "$MODELS_CONFIG" << EOF
+# androideai-core — model configuration
+# Editá a mano o usá 'androideai models set <seccion.campo> <valor> --global'.
+# Defaults: agent y semantic usan OpenCode Zen (Mimo V2.5 Free).
+# Si querés usar Ollama para embeddings, instalá con: $0 --with-ollama
+agent:
+  provider: opencode_zen
+  model: mimo-v2.5-free
+semantic:
+  provider: opencode_zen
+  base_url: ""
+  chat_model: mimo-v2.5-free
+  embedding_model: ""
+EOF
+        fi
         echo "Created global models config: $MODELS_CONFIG"
     fi
 
@@ -476,6 +502,17 @@ print_summary() {
     echo "=========================================="
 }
 
+# Parse command line arguments
+INSTALL_OLLAMA=false
+for arg in "$@"; do
+    case $arg in
+        --with-ollama)
+            INSTALL_OLLAMA=true
+            shift
+            ;;
+    esac
+done
+
 # Main
 main() {
     case "${1:-install}" in
@@ -503,13 +540,16 @@ main() {
             check_android_sdk
             ;;
         *)
-            echo "Usage: $0 {install|uninstall|from-source|sdk}"
+            echo "Usage: $0 {install|uninstall|from-source|sdk} [--with-ollama]"
             echo ""
             echo "Commands:"
             echo "  install      Install androideai-core and check Android SDK"
             echo "  uninstall    Remove androideai-core"
             echo "  from-source  Build and install from source"
             echo "  sdk          Check and install Android SDK tools only"
+            echo ""
+            echo "Options:"
+            echo "  --with-ollama  Also install Ollama for local embeddings (optional)"
             exit 1
             ;;
     esac

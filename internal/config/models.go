@@ -75,15 +75,13 @@ type SemanticModelConfig struct {
 
 // DefaultModelsConfig devuelve los defaults sensatos:
 //
-//   - Agent: OpenCode Zen con el modelo free (no requiere key, no
+//   - Agent: OpenCode Zen con Mimo V2.5 Free (no requiere key, no
 //     requiere GPU).
-//   - Semantic: Ollama local con qwen2.5-coder:7b para clasificación
-//     y nomic-embed-text para embeddings.
+//   - Semantic: OpenCode Zen con Mimo V2.5 Free para clasificación
+//     (sin embeddings locales, usa FTS para búsqueda).
 //
-// Si Ollama no tiene el modelo de embeddings instalado, el usuario
-// puede correr `ollama pull nomic-embed-text` o cambiar
-// `embedding_model` a otro modelo de embeddings compatible con
-// Ollama.
+// Si el usuario quiere embeddings locales, puede cambiar semantic
+// a provider "ollama" y configurar los modelos de embeddings.
 func DefaultModelsConfig() *ModelsConfig {
 	return &ModelsConfig{
 		Agent: AgentModelConfig{
@@ -91,10 +89,10 @@ func DefaultModelsConfig() *ModelsConfig {
 			Model:    "mimo-v2.5-free",
 		},
 		Semantic: SemanticModelConfig{
-			Provider:       "ollama",
-			BaseURL:        "http://localhost:11434",
-			ChatModel:      "qwen2.5-coder:7b",
-			EmbeddingModel: "nomic-embed-text",
+			Provider:       "opencode_zen",
+			BaseURL:        "",
+			ChatModel:      "mimo-v2.5-free",
+			EmbeddingModel: "",
 		},
 	}
 }
@@ -259,18 +257,16 @@ func (c *ModelsConfig) Validate() error {
 	if c.Agent.Model == "" {
 		return fmt.Errorf("agent.model no puede estar vacío")
 	}
-	if c.Semantic.Provider != "ollama" {
-		return fmt.Errorf("semantic.provider debe ser 'ollama' (por ahora; el único con embeddings implementados)")
+	validSemanticProviders := map[string]bool{
+		"ollama": true, "opencode_zen": true, "openai": true,
 	}
-	if c.Semantic.BaseURL == "" {
-		return fmt.Errorf("semantic.base_url no puede estar vacío")
+	if !validSemanticProviders[c.Semantic.Provider] {
+		return fmt.Errorf("semantic.provider debe ser 'ollama', 'opencode_zen' o 'openai'")
 	}
 	if c.Semantic.ChatModel == "" {
 		return fmt.Errorf("semantic.chat_model no puede estar vacío")
 	}
-	if c.Semantic.EmbeddingModel == "" {
-		return fmt.Errorf("semantic.embedding_model no puede estar vacío")
-	}
+	// embedding_model es opcional (solo necesario si se usan embeddings)
 	return nil
 }
 

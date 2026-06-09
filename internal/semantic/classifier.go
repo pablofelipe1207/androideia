@@ -75,6 +75,28 @@ type chatEnvelope struct {
 	Format   string        `json:"format,omitempty"`
 }
 
+// openaiMessage es el formato de mensaje para la API de OpenAI-compatible.
+type openaiMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// openaiRequest es el cuerpo de la petición para /v1/chat/completions.
+type openaiRequest struct {
+	Model    string          `json:"model"`
+	Messages []openaiMessage `json:"messages"`
+}
+
+// openaiResponse es la respuesta de la API de OpenAI-compatible.
+type openaiResponse struct {
+	Choices []struct {
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
 type chatResponse struct {
 	Message struct {
 		Role    string `json:"role"`
@@ -138,6 +160,17 @@ func (s *Semantic) ClassifyFile(path, content string) (*classificationResult, er
 
 	prompt := fmt.Sprintf(classifyPromptTemplate, path, truncated)
 
+	// Seleccionar el provider apropiado
+	switch s.provider {
+	case ProviderOpenAI, ProviderOpenCode:
+		return s.classifyFileOpenAI(prompt)
+	default:
+		return s.classifyFileOllama(prompt)
+	}
+}
+
+// classifyFileOllama usa la API de Ollama para clasificar.
+func (s *Semantic) classifyFileOllama(prompt string) (*classificationResult, error) {
 	envelope := chatEnvelope{
 		Model: s.model,
 		Messages: []chatMessage{
@@ -179,6 +212,59 @@ func (s *Semantic) ClassifyFile(path, content string) (*classificationResult, er
 	}
 
 	parsed, err := parseClassificationContent(cr.Message.Content)
+	if err != nil {
+		return nil, err
+	}
+	sanitizeClassification(parsed)
+	return parsed, nil
+}
+
+// classifyFileOpenAI usa la API OpenAI-compatible para clasificar.
+func (s *Semantic) classifyFileOpenAI(prompt string) (*classificationResult, error) {
+	req := openaiRequest{
+		Model: s.model,
+		Messages: []openaiMessage{
+			{Role: "system", Content: "You are an expert Android code classifier. You always reply with strict JSON only, no markdown, no prose."},
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling openai request: %w", err)
+	}
+
+	// Determinar la URL base
+	baseURL := s.ollamaURL
+	if baseURL == "" {
+		baseURL = "https://opencode.ai/zen/v1"
+	}
+
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Post(baseURL+"/chat/completions", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("error calling OpenAI-compatible API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var oaiResp openaiResponse
+	if err := json.Unmarshal(raw, &oaiResp); err != nil {
+		return nil, fmt.Errorf("error unmarshaling response: %w (raw: %s)", err, string(raw))
+	}
+
+	if len(oaiResp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	parsed, err := parseClassificationContent(oaiResp.Choices[0].Message.Content)
 	if err != nil {
 		return nil, err
 	}

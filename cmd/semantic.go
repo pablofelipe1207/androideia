@@ -35,10 +35,10 @@ símbolos ya indexados.`,
 		fmt.Println("Indexing project for semantic search...")
 		fmt.Println()
 
-		// Load configuration
-		cfg, err := config.LoadConfig()
+		// Load models config (models.yml)
+		mc, _, err := config.LoadModelsConfig()
 		if err != nil {
-			return fmt.Errorf("error loading config: %w", err)
+			return fmt.Errorf("error loading models config: %w", err)
 		}
 
 		// Open store
@@ -54,27 +54,32 @@ símbolos ya indexados.`,
 		defer s.Close()
 
 		// Auto-resolve model from Ollama (single-model shortcut)
-		if cfg.Provider == "ollama" {
-			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+		if mc.Semantic.Provider == "ollama" {
+			baseURL := mc.Semantic.BaseURL
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			resolved, autoSelected, err := llm.ResolveOllamaModel(baseURL, mc.Semantic.ChatModel)
 			if err != nil {
 				return fmt.Errorf("error resolving model: %w", err)
 			}
 			if autoSelected {
-				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, mc.Semantic.ChatModel)
 			}
-			cfg.Model = resolved
+			mc.Semantic.ChatModel = resolved
 		}
 
-		// Create semantic instance with resolved model
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
+		// Create semantic instance with provider from models.yml
+		provider := semantic.SemanticProvider(mc.Semantic.Provider)
+		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
 
 		// 1) Clasificación por archivo (LLM). Es el paso nuevo: para
 		//    cada .kt/.kts del índice, el LLM devuelve {type, tags,
 		//    architecture, conventions, summary}.
 		if !sem.IsAvailable() {
-			fmt.Printf("⚠️  Ollama is not available at %s. Skipping LLM classification, only embeddings will be refreshed.\n\n", cfg.OllamaURL)
+			fmt.Printf("⚠️  Semantic provider is not available. Skipping LLM classification, only embeddings will be refreshed.\n\n")
 		} else {
-			fmt.Printf("→ Clasificando archivos con %s ...\n", cfg.Model)
+			fmt.Printf("→ Clasificando archivos con %s (%s) ...\n", mc.Semantic.ChatModel, mc.Semantic.Provider)
 			classified, failed, err := sem.ClassifyAllFiles()
 			if err != nil {
 				return fmt.Errorf("error classifying files: %w", err)
@@ -114,10 +119,10 @@ var semanticSearchCmd = &cobra.Command{
 
 		fmt.Printf("Semantic search for: %s\n\n", query)
 
-		// Load configuration
-		cfg, err := config.LoadConfig()
+		// Load models config (models.yml)
+		mc, _, err := config.LoadModelsConfig()
 		if err != nil {
-			return fmt.Errorf("error loading config: %w", err)
+			return fmt.Errorf("error loading models config: %w", err)
 		}
 
 		// Open store
@@ -133,19 +138,24 @@ var semanticSearchCmd = &cobra.Command{
 		defer s.Close()
 
 		// Auto-resolve embedding model from Ollama (single-model shortcut)
-		if cfg.Provider == "ollama" {
-			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+		if mc.Semantic.Provider == "ollama" {
+			baseURL := mc.Semantic.BaseURL
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			resolved, autoSelected, err := llm.ResolveOllamaModel(baseURL, mc.Semantic.ChatModel)
 			if err != nil {
 				return fmt.Errorf("error resolving model: %w", err)
 			}
 			if autoSelected {
-				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, mc.Semantic.ChatModel)
 			}
-			cfg.Model = resolved
+			mc.Semantic.ChatModel = resolved
 		}
 
-		// Create semantic instance
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
+		// Create semantic instance with provider from models.yml
+		provider := semantic.SemanticProvider(mc.Semantic.Provider)
+		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
 
 		// Search
 		results, err := sem.Search(query, limit)
@@ -199,21 +209,26 @@ arquitectura, un resumen y un snippet de las convenciones detectadas.`,
 		}
 		defer s.Close()
 
-		cfg, err := config.LoadConfig()
+		mc, _, err := config.LoadModelsConfig()
 		if err != nil {
-			return fmt.Errorf("error loading config: %w", err)
+			return fmt.Errorf("error loading models config: %w", err)
 		}
-		if cfg.Provider == "ollama" {
-			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+		if mc.Semantic.Provider == "ollama" {
+			baseURL := mc.Semantic.BaseURL
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			resolved, autoSelected, err := llm.ResolveOllamaModel(baseURL, mc.Semantic.ChatModel)
 			if err != nil {
 				return fmt.Errorf("error resolving model: %w", err)
 			}
 			if autoSelected {
-				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, mc.Semantic.ChatModel)
 			}
-			cfg.Model = resolved
+			mc.Semantic.ChatModel = resolved
 		}
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
+		provider := semantic.SemanticProvider(mc.Semantic.Provider)
+		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
 
 		if showAll {
 			limit = 200
@@ -256,9 +271,9 @@ var semanticStatusCmd = &cobra.Command{
 	Short: "Muestra el estado de la búsqueda semántica",
 	Long:  `Muestra información sobre los embeddings, las clasificaciones LLM y la conexión con Ollama.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig()
+		mc, _, err := config.LoadModelsConfig()
 		if err != nil {
-			return fmt.Errorf("error loading config: %w", err)
+			return fmt.Errorf("error loading models config: %w", err)
 		}
 
 		dbPath := filepath.Join(".androideai", "core.db")
@@ -272,27 +287,34 @@ var semanticStatusCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		if cfg.Provider == "ollama" {
-			resolved, autoSelected, err := llm.ResolveOllamaModel(cfg.OllamaURL, cfg.Model)
+		if mc.Semantic.Provider == "ollama" {
+			baseURL := mc.Semantic.BaseURL
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			resolved, autoSelected, err := llm.ResolveOllamaModel(baseURL, mc.Semantic.ChatModel)
 			if err != nil {
 				return fmt.Errorf("error resolving model: %w", err)
 			}
 			if autoSelected {
-				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, cfg.Model)
+				fmt.Printf("Ollama has a single model installed; using %s (config had %s)\n", resolved, mc.Semantic.ChatModel)
 			}
-			cfg.Model = resolved
+			mc.Semantic.ChatModel = resolved
 		}
 
-		sem := semantic.NewSemantic(s.DB(), cfg.OllamaURL, cfg.EffectiveOllamaModel())
+		provider := semantic.SemanticProvider(mc.Semantic.Provider)
+		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
 
 		fmt.Println("Semantic Search Status")
 		fmt.Println("=====================")
-		fmt.Printf("Ollama URL: %s\n", cfg.OllamaURL)
-		fmt.Printf("Model:      %s\n", cfg.Model)
+		fmt.Printf("Provider:   %s\n", mc.Semantic.Provider)
+		fmt.Printf("Base URL:   %s\n", mc.Semantic.BaseURL)
+		fmt.Printf("Chat Model: %s\n", mc.Semantic.ChatModel)
+		fmt.Printf("Emb Model:  %s\n", mc.Semantic.EmbeddingModel)
 		if sem.IsAvailable() {
-			fmt.Println("Ollama:     ✅ Available")
+			fmt.Println("Status:     ✅ Available")
 		} else {
-			fmt.Println("Ollama:     ❌ Not available")
+			fmt.Println("Status:     ❌ Not available")
 		}
 
 		var embCount int

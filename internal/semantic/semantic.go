@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+// SemanticProvider define el tipo de proveedor semántico.
+type SemanticProvider string
+
+const (
+	ProviderOllama    SemanticProvider = "ollama"
+	ProviderOpenAI    SemanticProvider = "openai"
+	ProviderOpenCode  SemanticProvider = "opencode_zen"
+)
+
 type EmbeddingRequest struct {
 	Model  string `json:"model"`
 	Prompt string `json:"prompt"`
@@ -26,14 +35,20 @@ type Semantic struct {
 	db        *sql.DB
 	ollamaURL string
 	model     string
+	provider  SemanticProvider
 	client    *http.Client
 }
 
 func NewSemantic(db *sql.DB, ollamaURL, model string) *Semantic {
+	return NewSemanticWithProvider(db, ollamaURL, model, ProviderOllama)
+}
+
+func NewSemanticWithProvider(db *sql.DB, baseURL, model string, provider SemanticProvider) *Semantic {
 	return &Semantic{
 		db:        db,
-		ollamaURL: ollamaURL,
+		ollamaURL: baseURL,
 		model:     model,
+		provider:  provider,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -41,15 +56,37 @@ func NewSemantic(db *sql.DB, ollamaURL, model string) *Semantic {
 }
 
 func (s *Semantic) IsAvailable() bool {
-	resp, err := s.client.Get(s.ollamaURL + "/api/tags")
-	if err != nil {
+	switch s.provider {
+	case ProviderOllama:
+		resp, err := s.client.Get(s.ollamaURL + "/api/tags")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	case ProviderOpenAI, ProviderOpenCode:
+		// Para providers OpenAI-compatible, verificar con /v1/models
+		url := s.ollamaURL
+		if url == "" {
+			url = "https://opencode.ai/zen/v1"
+		}
+		resp, err := s.client.Get(url + "/models")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	default:
 		return false
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
 }
 
 func (s *Semantic) GetEmbedding(text string) ([]float32, error) {
+	// Solo Ollama soporta embeddings localmente
+	if s.provider != ProviderOllama {
+		return nil, fmt.Errorf("embeddings not supported for provider %s, using FTS fallback", s.provider)
+	}
+
 	request := EmbeddingRequest{
 		Model:  s.model,
 		Prompt: text,
