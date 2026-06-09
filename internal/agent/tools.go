@@ -384,6 +384,56 @@ func (r *ToolRegistry) registerDefaultTools() {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        "feature_graph",
+				Description: "Show the feature graph: all files in the project grouped by feature, with their types and relationships. Use this BEFORE creating or modifying files to understand the full structure. Call with a feature name to see just that feature, or without arguments to see all features.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"feature": map[string]interface{}{
+							"type":        "string",
+							"description": "Feature name to inspect (e.g. 'login', 'checkout'). If omitted, returns all features.",
+						},
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        "feature_deps",
+				Description: "Show dependency graph for a file: what it depends on, what depends on it, and the full impact chain if it changes. Use this BEFORE modifying a file to understand the blast radius.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"path": map[string]interface{}{
+							"type":        "string",
+							"description": "Path of the file to analyze dependencies for.",
+						},
+					},
+					"required": []string{"path"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        "feature_suggest",
+				Description: "Suggest what files to create or modify for a feature. Shows missing architectural layers and files needing review. Use this when planning a new feature or refactoring an existing one.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"feature": map[string]interface{}{
+							"type":        "string",
+							"description": "Feature name to analyze (e.g. 'login', 'checkout').",
+						},
+					},
+					"required": []string{"feature"},
+				},
+			},
+		},
 	}
 }
 
@@ -423,6 +473,12 @@ func (r *ToolRegistry) ExecuteTool(name string, args map[string]interface{}) (st
 		return r.confirmPlan(args)
 	case "ask_user":
 		return r.askUser(args)
+	case "feature_graph":
+		return r.featureGraph(args)
+	case "feature_deps":
+		return r.featureDeps(args)
+	case "feature_suggest":
+		return r.featureSuggest(args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -984,6 +1040,157 @@ func rolesAsStrings() []string {
 		out = append(out, string(r))
 	}
 	return out
+}
+
+func (r *ToolRegistry) featureGraph(args map[string]interface{}) (string, error) {
+	if r.semantic == nil {
+		return "", fmt.Errorf("semantic index not available. Run 'androideai semantic index' first")
+	}
+
+	graph, err := r.semantic.BuildFeatureGraph()
+	if err != nil {
+		return "", fmt.Errorf("error building feature graph: %w", err)
+	}
+
+	feature, _ := args["feature"].(string)
+
+	if feature != "" {
+		return graph.FormatSubgraph(feature), nil
+	}
+
+	// Summary of all features
+	summary := graph.Summary()
+	var out []string
+	out = append(out, fmt.Sprintf("Feature Graph: %d files, %d relationships\n", summary.TotalFiles, summary.TotalEdges))
+
+	// List features
+	for name, nodes := range summary.Features {
+		types := make(map[string]int)
+		for _, n := range nodes {
+			t := n.Type
+			if t == "" {
+				t = "other"
+			}
+			types[t]++
+		}
+		typeParts := make([]string, 0, len(types))
+		for t, c := range types {
+			typeParts = append(typeParts, fmt.Sprintf("%s:%d", t, c))
+		}
+		out = append(out, fmt.Sprintf("  %s (%d files: %s)", name, len(nodes), strings.Join(typeParts, ", ")))
+	}
+
+	out = append(out, fmt.Sprintf("\nArchitecture layers: %s", strings.Join(summary.ArchLayers, ", ")))
+	return strings.Join(out, "\n"), nil
+}
+
+func (r *ToolRegistry) featureDeps(args map[string]interface{}) (string, error) {
+	path, ok := args["path"].(string)
+	if !ok || path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+
+	if r.semantic == nil {
+		return "", fmt.Errorf("semantic index not available. Run 'androideai semantic index' first")
+	}
+
+	graph, err := r.semantic.BuildFeatureGraph()
+	if err != nil {
+		return "", fmt.Errorf("error building feature graph: %w", err)
+	}
+
+	// Find node by path
+	var nodeID int64
+	for id, n := range graph.Nodes {
+		if n.Path == path || strings.HasSuffix(n.Path, "/"+path) || strings.HasSuffix(path, "/"+n.Path) {
+			nodeID = id
+			break
+		}
+	}
+	if nodeID == 0 {
+		return fmt.Sprintf("File %q not found in the feature graph. Make sure the file is indexed (run 'androideai semantic index').", path), nil
+	}
+
+	node := graph.GetNode(nodeID)
+	var out []string
+	out = append(out, fmt.Sprintf("Dependencies for: %s (type: %s)\n", node.Path, node.Type))
+
+	// What this file depends on (outgoing)
+	deps := graph.GetDependencies(nodeID)
+	if len(deps) > 0 {
+		out = append(out, "This file depends on:")
+		for _, e := range deps {
+			if target, ok := graph.Nodes[e.Target]; ok {
+				out = append(out, fmt.Sprintf("  -> %s (%s) [%s]", target.Path, target.Type, e.Reason))
+			}
+		}
+	} else {
+		out = append(out, "This file has no architectural dependencies.")
+	}
+
+	// What depends on this file (incoming)
+	dependents := graph.GetDependents(nodeID)
+	if len(dependents) > 0 {
+		out = append(out, "\nFiles that depend on this file:")
+		for _, e := range dependents {
+			if source, ok := graph.Nodes[e.Source]; ok {
+				out = append(out, fmt.Sprintf("  <- %s (%s) [%s]", source.Path, source.Type, e.Reason))
+			}
+		}
+	} else {
+		out = append(out, "\nNo files depend on this file.")
+	}
+
+	// Impact analysis
+	impact := graph.GetImpact(nodeID)
+	if len(impact) > 0 {
+		out = append(out, fmt.Sprintf("\nImpact if this file changes (%d files affected):", len(impact)))
+		for _, n := range impact {
+			out = append(out, fmt.Sprintf("  ! %s (%s)", n.Path, n.Type))
+		}
+	}
+
+	return strings.Join(out, "\n"), nil
+}
+
+func (r *ToolRegistry) featureSuggest(args map[string]interface{}) (string, error) {
+	feature, ok := args["feature"].(string)
+	if !ok || feature == "" {
+		return "", fmt.Errorf("feature is required")
+	}
+
+	if r.semantic == nil {
+		return "", fmt.Errorf("semantic index not available. Run 'androideai semantic index' first")
+	}
+
+	graph, err := r.semantic.BuildFeatureGraph()
+	if err != nil {
+		return "", fmt.Errorf("error building feature graph: %w", err)
+	}
+
+	suggestions := graph.SuggestForFeature(feature)
+	subgraph := graph.FormatSubgraph(feature)
+
+	var out []string
+	out = append(out, subgraph)
+
+	if len(suggestions) == 0 {
+		out = append(out, "\nNo suggestions — the feature appears complete.")
+		return strings.Join(out, "\n"), nil
+	}
+
+	out = append(out, fmt.Sprintf("\nSuggestions (%d):", len(suggestions)))
+	for i, s := range suggestions {
+		out = append(out, fmt.Sprintf("%d. [%s] %s: %s", i+1, strings.ToUpper(s.Action), s.Type, s.Reason))
+		if s.Path != "" {
+			out = append(out, fmt.Sprintf("   file: %s", s.Path))
+		}
+		if s.Context != "" {
+			out = append(out, fmt.Sprintf("   %s", s.Context))
+		}
+	}
+
+	return strings.Join(out, "\n"), nil
 }
 
 // confirmPlan solicita al usuario que confirme un plan antes de ejecutarlo.

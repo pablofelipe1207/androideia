@@ -366,13 +366,212 @@ func emptyAs(s, fallback string) string {
 	return s
 }
 
+var semanticGraphCmd = &cobra.Command{
+	Use:   "graph",
+	Short: "Show the feature graph (files grouped by feature with relationships)",
+	Long: `Builds and displays the feature graph from the semantic index.
+Shows all features and their files, or a single feature's subgraph
+with types, dependencies, and missing layers.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		feature, _ := cmd.Flags().GetString("feature")
+
+		dbPath := filepath.Join(".androideai", "core.db")
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return fmt.Errorf("database not found, run 'androideai init' first")
+		}
+		s, err := store.NewStore(dbPath)
+		if err != nil {
+			return fmt.Errorf("error opening database: %w", err)
+		}
+		defer s.Close()
+
+		mc, _, err := config.LoadModelsConfig()
+		if err != nil {
+			return fmt.Errorf("error loading models config: %w", err)
+		}
+		provider := semantic.SemanticProvider(mc.Semantic.Provider)
+		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+
+		graph, err := sem.BuildFeatureGraph()
+		if err != nil {
+			return fmt.Errorf("error building feature graph: %w", err)
+		}
+
+		if feature != "" {
+			fmt.Print(graph.FormatSubgraph(feature))
+		} else {
+			summary := graph.Summary()
+			fmt.Printf("Feature Graph: %d files, %d relationships\n\n", summary.TotalFiles, summary.TotalEdges)
+			for name, nodes := range summary.Features {
+				types := make(map[string]int)
+				for _, n := range nodes {
+					t := n.Type
+					if t == "" {
+						t = "other"
+					}
+					types[t]++
+				}
+				typeParts := make([]string, 0, len(types))
+				for t, c := range types {
+					typeParts = append(typeParts, fmt.Sprintf("%s:%d", t, c))
+				}
+				fmt.Printf("  %s (%d files: %s)\n", name, len(nodes), strings.Join(typeParts, ", "))
+			}
+			fmt.Printf("\nArchitecture layers: %s\n", strings.Join(summary.ArchLayers, ", "))
+		}
+		return nil
+	},
+}
+
+var semanticDepsCmd = &cobra.Command{
+	Use:   "deps [path]",
+	Short: "Show dependencies for a file (what it depends on, what depends on it)",
+	Long: `Analyzes the feature graph to show architectural dependencies for a
+specific file. Shows outgoing dependencies (what this file needs),
+incoming dependencies (what needs this file), and the impact chain
+if this file changes.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := args[0]
+
+		dbPath := filepath.Join(".androideai", "core.db")
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return fmt.Errorf("database not found, run 'androideai init' first")
+		}
+		s, err := store.NewStore(dbPath)
+		if err != nil {
+			return fmt.Errorf("error opening database: %w", err)
+		}
+		defer s.Close()
+
+		mc, _, err := config.LoadModelsConfig()
+		if err != nil {
+			return fmt.Errorf("error loading models config: %w", err)
+		}
+		provider := semantic.SemanticProvider(mc.Semantic.Provider)
+		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+
+		graph, err := sem.BuildFeatureGraph()
+		if err != nil {
+			return fmt.Errorf("error building feature graph: %w", err)
+		}
+
+		var nodeID int64
+		for id, n := range graph.Nodes {
+			if n.Path == path || strings.HasSuffix(n.Path, "/"+path) || strings.HasSuffix(path, "/"+n.Path) {
+				nodeID = id
+				break
+			}
+		}
+		if nodeID == 0 {
+			return fmt.Errorf("file %q not found in the feature graph", path)
+		}
+
+		node := graph.GetNode(nodeID)
+		fmt.Printf("Dependencies for: %s (type: %s)\n\n", node.Path, node.Type)
+
+		deps := graph.GetDependencies(nodeID)
+		if len(deps) > 0 {
+			fmt.Println("This file depends on:")
+			for _, e := range deps {
+				if target, ok := graph.Nodes[e.Target]; ok {
+					fmt.Printf("  -> %s (%s) [%s]\n", target.Path, target.Type, e.Reason)
+				}
+			}
+		} else {
+			fmt.Println("This file has no architectural dependencies.")
+		}
+
+		dependents := graph.GetDependents(nodeID)
+		if len(dependents) > 0 {
+			fmt.Println("\nFiles that depend on this file:")
+			for _, e := range dependents {
+				if source, ok := graph.Nodes[e.Source]; ok {
+					fmt.Printf("  <- %s (%s) [%s]\n", source.Path, source.Type, e.Reason)
+				}
+			}
+		} else {
+			fmt.Println("\nNo files depend on this file.")
+		}
+
+		impact := graph.GetImpact(nodeID)
+		if len(impact) > 0 {
+			fmt.Printf("\nImpact if this file changes (%d files affected):\n", len(impact))
+			for _, n := range impact {
+				fmt.Printf("  ! %s (%s)\n", n.Path, n.Type)
+			}
+		}
+
+		return nil
+	},
+}
+
+var semanticSuggestCmd = &cobra.Command{
+	Use:   "suggest [feature]",
+	Short: "Suggest what files to create or modify for a feature",
+	Long: `Analyzes the feature graph to identify missing architectural layers
+and files that need review. Use this when planning a new feature or
+refactoring an existing one.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		feature := args[0]
+
+		dbPath := filepath.Join(".androideai", "core.db")
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return fmt.Errorf("database not found, run 'androideai init' first")
+		}
+		s, err := store.NewStore(dbPath)
+		if err != nil {
+			return fmt.Errorf("error opening database: %w", err)
+		}
+		defer s.Close()
+
+		mc, _, err := config.LoadModelsConfig()
+		if err != nil {
+			return fmt.Errorf("error loading models config: %w", err)
+		}
+		provider := semantic.SemanticProvider(mc.Semantic.Provider)
+		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+
+		graph, err := sem.BuildFeatureGraph()
+		if err != nil {
+			return fmt.Errorf("error building feature graph: %w", err)
+		}
+
+		fmt.Print(graph.FormatSubgraph(feature))
+
+		suggestions := graph.SuggestForFeature(feature)
+		if len(suggestions) == 0 {
+			fmt.Println("\nNo suggestions — the feature appears complete.")
+			return nil
+		}
+
+		fmt.Printf("\nSuggestions (%d):\n", len(suggestions))
+		for i, s := range suggestions {
+			fmt.Printf("%d. [%s] %s: %s\n", i+1, strings.ToUpper(s.Action), s.Type, s.Reason)
+			if s.Path != "" {
+				fmt.Printf("   file: %s\n", s.Path)
+			}
+			if s.Context != "" {
+				fmt.Printf("   %s\n", s.Context)
+			}
+		}
+
+		return nil
+	},
+}
+
 func init() {
 	semanticSearchCmd.Flags().IntP("limit", "l", 10, "Maximum number of results")
 	semanticLocateCmd.Flags().IntP("limit", "l", 10, "Maximum number of results")
 	semanticLocateCmd.Flags().BoolP("all", "a", false, "Show up to 200 results")
+	semanticGraphCmd.Flags().StringP("feature", "f", "", "Feature name to inspect (omit for all)")
 
 	semanticCmd.AddCommand(semanticIndexCmd)
 	semanticCmd.AddCommand(semanticSearchCmd)
 	semanticCmd.AddCommand(semanticLocateCmd)
 	semanticCmd.AddCommand(semanticStatusCmd)
+	semanticCmd.AddCommand(semanticGraphCmd)
+	semanticCmd.AddCommand(semanticDepsCmd)
+	semanticCmd.AddCommand(semanticSuggestCmd)
 }

@@ -114,6 +114,11 @@ androideai agent --resume 1 "now add unit tests for the ViewModel"
 - **Context-Aware Agent**: Searches knowledge base before executing tasks
 - **Interview Mode**: Practice Android technical interviews with 40+ curated questions, scoring, and history tracking
 - **Task Queue Manager**: Manage and process tasks by priority with LLM-powered execution
+- **Feature Graph**: Map relationships between files, detect missing layers, and suggest what to create
+- **Dynamic System Prompt**: Prompt is built dynamically based on task context, reducing token usage
+- **Modular Skills**: Skills activate automatically based on triggers (Compose, Hilt, Room, Navigation)
+- **Session Summaries**: Old sessions are compressed to summaries, saving tokens on resume
+- **Semantic-Brain Sync**: Conventions from semantic index are automatically synced to brain after each session
 
 ## Agent Commands
 
@@ -587,6 +592,135 @@ module, type, tags, detected architecture, summary and the
 "conventions" snippet so you can see at a glance how a given role is
 written in your project (e.g. "Hilt constructor injection, exposes
 StateFlow<UiState>, no Android dependencies").
+
+## Feature Graph
+
+The feature graph builds on the semantic index to map **relationships
+between files**: which files belong to the same feature, which depend
+on which architecturally, and what's missing. The agent uses this to
+navigate the codebase and decide what to create or modify.
+
+### How it works
+
+1. **Feature grouping**: files are grouped by feature name (derived
+   from tags, file path, and file name — e.g., `LoginViewModel` +
+   `LoginScreen` + `LoginUseCase` → feature "login").
+2. **Architectural dependencies**: inferred from file types —
+   `Activity` → `ViewModel` → `UseCase` → `Repository` → `DAO`.
+3. **Package co-location**: files in the same small package are
+   linked as related.
+
+### Agent tools
+
+| Tool | What it does |
+|------|-------------|
+| `feature_graph` | Shows all features and their files, or a single feature's full subgraph |
+| `feature_deps` | Shows what a file depends on, what depends on it, and the impact chain |
+| `feature_suggest` | Suggests missing layers and files to create/modify for a feature |
+
+Example agent flow:
+
+```
+Agent: feature_graph feature="login"
+→ shows LoginViewModel, LoginScreen, LoginUseCase, LoginRepository
+
+Agent: feature_deps path="app/src/.../LoginViewModel.kt"
+→ shows: depends on LoginUseCase, LoginUseCase depends on LoginRepository
+→ shows: LoginScreen depends on this, impact = 3 files
+
+Agent: feature_suggest feature="login"
+→ suggests: missing DAO layer, missing DI module, missing tests
+```
+
+### CLI (also available from the command line)
+
+```bash
+# See all features
+androideai semantic graph
+
+# See a specific feature
+androideai semantic graph --feature login
+
+# Check dependencies for a file
+androideai semantic deps --path app/src/.../LoginViewModel.kt
+
+# Get suggestions for a feature
+androideai semantic suggest --feature login
+```
+
+## Token Optimization
+
+androideai-core optimizes token usage in several ways:
+
+### Dynamic System Prompt
+The system prompt is built dynamically based on the task:
+- **Base prompt**: Identity + workflow + package rules (~50 lines)
+- **File creation module**: Added when task involves creating/modifying files
+- **Semantic module**: Added when task involves code exploration
+- **Scaffold module**: Added when task involves Compose, Hilt, Room, or Navigation
+- **Skills**: Only active skills are included
+
+This reduces token usage by ~30-50% compared to a static prompt.
+
+### Session Summaries
+When a session completes, a 3-5 sentence summary is generated. When resuming
+old sessions, only the summary is loaded instead of all messages. This reduces
+token usage by ~60-80% for sessions with long history.
+
+### Selective Brain Knowledge
+Knowledge entries are searched by relevance to the task type, not just
+keyword matching. Only 2-3 most relevant entries are injected, truncated
+to 150 chars each.
+
+## Modular Skills
+
+Skills are reusable knowledge modules that activate based on context:
+
+### Built-in Skills
+
+| Skill | Activates When | Tokens |
+|-------|---------------|--------|
+| `android_architecture` | Always | ~200 |
+| `compose_ui` | Task mentions compose, screen, UI | ~150 |
+| `hilt_di` | Task mentions Hilt, DI, inject | ~150 |
+| `data_persistence` | Task mentions Room, database, DAO | ~120 |
+| `navigation` | Task mentions navigation, routes | ~80 |
+| `testing` | Task mentions tests, JUnit | ~100 |
+
+### Custom Skills
+
+Create skills in `.androideai/skills/` as YAML files:
+
+```yaml
+# .androideai/skills/my-skill.yml
+skills:
+  - name: my-custom-skill
+    description: My project-specific patterns
+    content: |
+      ## My Patterns
+      - Use StateFlow for all state
+      - Always use @HiltViewModel
+      - Follow MVVM architecture
+    triggers:
+      content: ["my-pattern", "custom"]
+      types: ["viewmodel"]
+```
+
+### Skill Management
+
+```bash
+# List all skills (built-in + project)
+androideai skills list
+
+# Show a specific skill
+androideai skills show compose_ui
+
+# Add a skill from a file
+androideai skills add path/to/skill.yml
+
+# Search skills by trigger
+androideai skills search compose
+```
 
 ## What `androideai init` does
 

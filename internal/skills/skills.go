@@ -1,350 +1,264 @@
 package skills
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
+
+	"github.com/pablofelipe1207/androideia/internal/brain"
+	"gopkg.in/yaml.v3"
 )
 
+// SkillInfo represents a skill for the CLI (backward compatible with cmd/skills.go).
+type SkillInfo struct {
+	Name        string   `json:"name" yaml:"name"`
+	Description string   `json:"description" yaml:"description"`
+	Source      string   `json:"source" yaml:"source"`    // "builtin", "global", "project", "opencode", "android"
+	Path        string   `json:"path" yaml:"path"`        // filesystem path
+	Content     string   `json:"content" yaml:"content"`  // the actual skill text
+	Triggers    []string `json:"triggers" yaml:"triggers"` // trigger keywords
+}
+
+// Skill is a reusable knowledge module (enhanced version for agent activation).
 type Skill struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Triggers    []string `json:"triggers"`
-	Path        string   `json:"path"`
-	Source      string   `json:"source"` // "embedded", "global", "project"
-	Content     string   `json:"content,omitempty"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Content     string   `yaml:"content"`
+	Always      bool     `yaml:"always"`
+	Priority    int      `yaml:"priority"`
+	MaxTokens   int      `yaml:"max_tokens"`
+	Triggers    Triggers `yaml:"triggers"`
 }
 
+// Triggers define when a skill should be activated.
+type Triggers struct {
+	Files   []string `yaml:"files"`
+	Content []string `yaml:"content"`
+	Tools   []string `yaml:"tools"`
+	Types   []string `yaml:"types"`
+}
+
+// SkillConfig is the YAML configuration for skills.
+type SkillConfig struct {
+	Skills []Skill `yaml:"skills"`
+}
+
+// SkillLoader manages skill discovery, loading, and import (backward compatible).
 type SkillLoader struct {
-	projectDir string
-	globalDir  string
-	skills     map[string]*Skill
+	projectDir  string
+	globalDir   string
+	embeddedDir string
+	skills      []SkillInfo
 }
 
+// NewSkillLoader creates a new skill loader for the given project.
 func NewSkillLoader(projectDir string) *SkillLoader {
 	homeDir, _ := os.UserHomeDir()
 	globalDir := filepath.Join(homeDir, ".androideai", "skills")
+	projectSkillsDir := filepath.Join(projectDir, ".androideai", "skills")
 
 	return &SkillLoader{
-		projectDir: filepath.Join(projectDir, ".androideai", "skills"),
-		globalDir:  globalDir,
-		skills:     make(map[string]*Skill),
+		projectDir:  projectSkillsDir,
+		globalDir:   globalDir,
+		embeddedDir: "embedded",
 	}
 }
 
+// LoadAll loads skills from all sources (project, global, embedded).
 func (l *SkillLoader) LoadAll() error {
-	// Load in order: embedded < global < project (project wins)
-	if err := l.loadEmbedded(); err != nil {
-		return fmt.Errorf("error loading embedded skills: %w", err)
+	l.skills = nil
+
+	// Load embedded (built-in) skills
+	for _, s := range builtinSkills() {
+		l.skills = append(l.skills, SkillInfo{
+			Name:        s.Name,
+			Description: s.Description,
+			Source:      "builtin",
+			Path:        "(built-in)",
+			Content:     s.Content,
+			Triggers:    triggerToStrings(s.Triggers),
+		})
 	}
 
-	if err := l.loadFromDir(l.globalDir, "global"); err != nil {
-		// Ignore if directory doesn't exist
-		fmt.Printf("Note: Global skills directory not found at %s\n", l.globalDir)
-	}
+	// Load global skills
+	l.loadFromDir(l.globalDir, "global")
 
-	if err := l.loadFromDir(l.projectDir, "project"); err != nil {
-		// Ignore if directory doesn't exist
-		fmt.Printf("Note: Project skills directory not found at %s\n", l.projectDir)
-	}
+	// Load project skills
+	l.loadFromDir(l.projectDir, "project")
 
 	return nil
 }
 
-func (l *SkillLoader) loadEmbedded() error {
-	// Note: Embedded skills are loaded from the skills/ directory at the project root
-	// For now, we'll skip embedded skills and focus on project/global skills
-	// In a real implementation, you would use embed.FS here
-	return nil
+// ListSkills returns all loaded skills.
+func (l *SkillLoader) ListSkills() []SkillInfo {
+	return l.skills
 }
 
-func (l *SkillLoader) loadFromDir(dir, source string) error {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return nil
-	}
-
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		if strings.HasSuffix(path, "SKILL.md") {
-			skill, err := l.parseSkillFileFromOS(path)
-			if err != nil {
-				fmt.Printf("Warning: Error parsing skill %s: %v\n", path, err)
-				return nil
-			}
-			skill.Source = source
-			skill.Path = path
-			l.skills[skill.Name] = skill
-		}
-
-		return nil
-	})
-}
-
-func (l *SkillLoader) parseSkillFile(f fs.FS, path string) (*Skill, error) {
-	data, err := fs.ReadFile(f, path)
-	if err != nil {
-		return nil, err
-	}
-
-	return parseSkillContent(string(data))
-}
-
-func (l *SkillLoader) parseSkillFileFromOS(path string) (*Skill, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	return parseSkillContent(string(data))
-}
-
-func parseSkillContent(content string) (*Skill, error) {
-	skill := &Skill{}
-
-	// Check for frontmatter
-	if !strings.HasPrefix(content, "---") {
-		return nil, fmt.Errorf("no frontmatter found")
-	}
-
-	// Find end of frontmatter
-	endIdx := strings.Index(content[3:], "---")
-	if endIdx == -1 {
-		return nil, fmt.Errorf("unclosed frontmatter")
-	}
-
-	frontmatter := content[3 : endIdx+3]
-	body := content[endIdx+6:]
-
-	// Parse frontmatter (simple YAML parsing)
-	lines := strings.Split(frontmatter, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		// Remove quotes if present
-		value = strings.Trim(value, "\"'")
-
-		switch key {
-		case "name":
-			skill.Name = value
-		case "description":
-			skill.Description = value
-		case "triggers":
-			// Parse array
-			value = strings.Trim(value, "[]")
-			// Split by comma and clean up each trigger
-			skill.Triggers = strings.Split(value, ",")
-			for i, t := range skill.Triggers {
-				// Remove quotes and whitespace
-				t = strings.TrimSpace(t)
-				t = strings.Trim(t, "\"'")
-				skill.Triggers[i] = t
-			}
+// GetSkill returns a skill by name.
+func (l *SkillLoader) GetSkill(name string) (*SkillInfo, error) {
+	for _, s := range l.skills {
+		if strings.EqualFold(s.Name, name) {
+			return &s, nil
 		}
 	}
-
-	// Trim leading newline from body
-	body = strings.TrimPrefix(body, "\n")
-	skill.Content = body
-	return skill, nil
+	return nil, fmt.Errorf("skill %q not found", name)
 }
 
-func (l *SkillLoader) GetSkill(name string) (*Skill, error) {
-	if skill, ok := l.skills[name]; ok {
-		return skill, nil
-	}
-	return nil, fmt.Errorf("skill '%s' not found", name)
+// GetSkillPaths returns the skill directories in order of precedence.
+func (l *SkillLoader) GetSkillPaths() [3]string {
+	return [3]string{l.projectDir, l.globalDir, l.embeddedDir}
 }
 
-func (l *SkillLoader) ListSkills() []*Skill {
-	var skills []*Skill
-	for _, skill := range l.skills {
-		skills = append(skills, skill)
-	}
-
-	// Sort by name
-	sort.Slice(skills, func(i, j int) bool {
-		return skills[i].Name < skills[j].Name
-	})
-
-	return skills
-}
-
+// AddSkill copies a skill from a source path to the project skills directory.
 func (l *SkillLoader) AddSkill(sourcePath string) error {
-	// Check if source exists
-	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
-		return fmt.Errorf("source path does not exist: %s", sourcePath)
-	}
-
-	// Read the skill file
-	data, err := os.ReadFile(sourcePath)
+	info, err := os.Stat(sourcePath)
 	if err != nil {
-		return fmt.Errorf("error reading skill file: %w", err)
+		return fmt.Errorf("source path not found: %w", err)
 	}
 
-	// Parse skill
-	skill, err := parseSkillContent(string(data))
-	if err != nil {
-		return fmt.Errorf("error parsing skill file: %w", err)
-	}
-
-	// Create project skills directory if it doesn't exist
 	if err := os.MkdirAll(l.projectDir, 0755); err != nil {
 		return fmt.Errorf("error creating skills directory: %w", err)
 	}
 
-	// Copy skill to project directory
-	skillDir := filepath.Join(l.projectDir, skill.Name)
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		return fmt.Errorf("error creating skill directory: %w", err)
+	if info.IsDir() {
+		// Copy entire directory
+	 destDir := filepath.Join(l.projectDir, filepath.Base(sourcePath))
+		return copyDir(sourcePath, destDir)
 	}
 
-	// Copy SKILL.md
-	destPath := filepath.Join(skillDir, "SKILL.md")
-	if err := os.WriteFile(destPath, data, 0644); err != nil {
-		return fmt.Errorf("error copying skill file: %w", err)
-	}
-
-	// Reload skills
-	l.skills = make(map[string]*Skill)
-	return l.LoadAll()
+	// Copy single file
+	destPath := filepath.Join(l.projectDir, filepath.Base(sourcePath))
+	return copyFile(sourcePath, destPath)
 }
 
-func (l *SkillLoader) GetSkillPaths() []string {
-	return []string{
-		l.projectDir,
-		l.globalDir,
-		"embedded",
-	}
-}
-
-func (l *SkillLoader) GetSkillContent(name string) (string, error) {
-	skill, err := l.GetSkill(name)
-	if err != nil {
-		return "", err
-	}
-	return skill.Content, nil
-}
-
-func (l *SkillLoader) FindSkillsByTrigger(trigger string) []*Skill {
-	var matches []*Skill
-	trigger = strings.ToLower(trigger)
-
-	for _, skill := range l.skills {
-		for _, t := range skill.Triggers {
-			if strings.Contains(strings.ToLower(t), trigger) {
-				matches = append(matches, skill)
+// FindSkillsByTrigger finds skills that match a trigger keyword.
+func (l *SkillLoader) FindSkillsByTrigger(trigger string) []SkillInfo {
+	var matches []SkillInfo
+	triggerLower := strings.ToLower(trigger)
+	for _, s := range l.skills {
+		for _, t := range s.Triggers {
+			if strings.EqualFold(t, triggerLower) {
+				matches = append(matches, s)
 				break
 			}
 		}
 	}
-
 	return matches
 }
 
-func (l *SkillLoader) ExportSkillsJSON() (string, error) {
-	skills := l.ListSkills()
-	data, err := json.MarshalIndent(skills, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+// ImportFromOpencode imports skills from opencode's skill directory.
+func (l *SkillLoader) ImportFromOpencode() (int, error) {
+	homeDir, _ := os.UserHomeDir()
+	opencodeDir := filepath.Join(homeDir, ".config", "opencode", "skills")
+	return l.importFromDir(opencodeDir, "opencode")
 }
 
-func (l *SkillLoader) ImportFromOpencode() (int, error) {
-	// Get opencode skills directory
-	homeDir, err := os.UserHomeDir()
+// ImportFromAndroidSkills imports official Android skills.
+func (l *SkillLoader) ImportFromAndroidSkills() (int, error) {
+	// For now, return 0 - the actual Android skills import would
+	// download from github.com/android/skills
+	return 0, fmt.Errorf("Android skills import not yet implemented")
+}
+
+// ImportAndroidSkillByName imports a specific Android skill.
+func (l *SkillLoader) ImportAndroidSkillByName(name string) error {
+	return fmt.Errorf("Android skill import not yet implemented")
+}
+
+func (l *SkillLoader) loadFromDir(dir, source string) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, fmt.Errorf("error getting home directory: %w", err)
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			// Look for SKILL.md in subdirectory
+			skillFile := filepath.Join(dir, e.Name(), "SKILL.md")
+			if content, err := os.ReadFile(skillFile); err == nil {
+				l.skills = append(l.skills, SkillInfo{
+					Name:        e.Name(),
+					Description: extractDescription(string(content)),
+					Source:      source,
+					Path:        skillFile,
+					Content:     string(content),
+				})
+			}
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext == ".yml" || ext == ".yaml" {
+			l.loadYAMLFile(filepath.Join(dir, e.Name()), source)
+		} else if e.Name() == "SKILL.md" {
+			if content, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil {
+				l.skills = append(l.skills, SkillInfo{
+					Name:        strings.TrimSuffix(e.Name(), "SKILL.md"),
+					Description: extractDescription(string(content)),
+					Source:      source,
+					Path:        filepath.Join(dir, e.Name()),
+					Content:     string(content),
+				})
+			}
+		}
+	}
+}
+
+func (l *SkillLoader) loadYAMLFile(path, source string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var cfg SkillConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+	for _, s := range cfg.Skills {
+		l.skills = append(l.skills, SkillInfo{
+			Name:        s.Name,
+			Description: s.Description,
+			Source:      source,
+			Path:        path,
+			Content:     s.Content,
+			Triggers:    triggerToStrings(s.Triggers),
+		})
+	}
+}
+
+func (l *SkillLoader) importFromDir(sourceDir, source string) (int, error) {
+	if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
+		return 0, nil
 	}
 
-	opencodeSkillsDir := filepath.Join(homeDir, ".config", "opencode", "skills")
-	if _, err := os.Stat(opencodeSkillsDir); os.IsNotExist(err) {
-		return 0, fmt.Errorf("opencode skills directory not found at %s", opencodeSkillsDir)
-	}
-
-	// Create project skills directory if it doesn't exist
 	if err := os.MkdirAll(l.projectDir, 0755); err != nil {
-		return 0, fmt.Errorf("error creating project skills directory: %w", err)
+		return 0, fmt.Errorf("error creating skills directory: %w", err)
 	}
 
 	count := 0
-
-	// Walk through opencode skills directory
-	err = filepath.Walk(opencodeSkillsDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-
 		if info.IsDir() {
 			return nil
 		}
-
-		if strings.HasSuffix(path, "SKILL.md") {
-			// Get skill directory name
+		if strings.HasSuffix(path, "SKILL.md") || strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml") {
 			skillDir := filepath.Base(filepath.Dir(path))
-			
-			// Copy skill to project
 			destDir := filepath.Join(l.projectDir, skillDir)
 			if err := os.MkdirAll(destDir, 0755); err != nil {
-				return fmt.Errorf("error creating skill directory: %w", err)
+				return err
 			}
-
-			// Copy SKILL.md
-			destPath := filepath.Join(destDir, "SKILL.md")
+			destPath := filepath.Join(destDir, filepath.Base(path))
 			if err := copyFile(path, destPath); err != nil {
-				return fmt.Errorf("error copying skill file: %w", err)
+				return err
 			}
-
-			// Copy references directory if it exists
-			refsDir := filepath.Join(filepath.Dir(path), "references")
-			if _, err := os.Stat(refsDir); err == nil {
-				destRefsDir := filepath.Join(destDir, "references")
-				if err := copyDir(refsDir, destRefsDir); err != nil {
-					fmt.Printf("Warning: Error copying references directory: %v\n", err)
-				}
-			}
-
 			count++
-			fmt.Printf("Imported skill: %s\n", skillDir)
 		}
-
 		return nil
 	})
 
-	if err != nil {
-		return count, fmt.Errorf("error importing skills: %w", err)
-	}
-
-	// Reload skills
-	l.skills = make(map[string]*Skill)
-	if err := l.LoadAll(); err != nil {
-		return count, fmt.Errorf("error reloading skills: %w", err)
-	}
-
-	return count, nil
+	return count, err
 }
 
 func copyFile(src, dst string) error {
@@ -360,7 +274,7 @@ func copyFile(src, dst string) error {
 	}
 	defer destFile.Close()
 
-	_, err = destFile.ReadFrom(sourceFile)
+	_, err = io.Copy(destFile, sourceFile)
 	return err
 }
 
@@ -369,197 +283,529 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
-
-		// Create destination path
-		relPath, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		destPath := filepath.Join(dst, relPath)
-
+		relPath, _ := filepath.Rel(src, path)
+		dstPath := filepath.Join(dst, relPath)
 		if info.IsDir() {
-			return os.MkdirAll(destPath, 0755)
+			return os.MkdirAll(dstPath, 0755)
 		}
-
-		return copyFile(path, destPath)
+		return copyFile(path, dstPath)
 	})
 }
 
-func (l *SkillLoader) ImportFromURL(url string) error {
-	// This is a placeholder for importing skills from a URL
-	// In a real implementation, you would download and extract the skill
-	return fmt.Errorf("URL import not implemented yet")
+func extractDescription(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			if len(line) > 100 {
+				return line[:100] + "..."
+			}
+			return line
+		}
+	}
+	return ""
 }
 
-func (l *SkillLoader) ImportFromAndroidSkills() (int, error) {
-	// Clone the Android skills repository to a temp directory
-	tmpDir, err := os.MkdirTemp("", "android-skills-*")
+func triggerToStrings(t Triggers) []string {
+	var result []string
+	result = append(result, t.Files...)
+	result = append(result, t.Content...)
+	result = append(result, t.Tools...)
+	result = append(result, t.Types...)
+	return result
+}
+
+// --- Agent integration (new API) ---
+
+// ActivationContext provides information to decide which skills to activate.
+type ActivationContext struct {
+	Task       string
+	ToolsUsed  []string
+	FileTypes  []string
+	FilePaths  []string
+	MaxTokens  int
+	HasCompose bool
+	HasHilt    bool
+	HasRoom    bool
+	HasNav     bool
+}
+
+// BuildContextFromTask creates an ActivationContext from a task string.
+func BuildContextFromTask(task string) ActivationContext {
+	ctx := ActivationContext{Task: task}
+	lower := strings.ToLower(task)
+
+	if strings.Contains(lower, "compose") || strings.Contains(lower, "screen") || strings.Contains(lower, "ui") {
+		ctx.HasCompose = true
+	}
+	if strings.Contains(lower, "hilt") || strings.Contains(lower, "dagger") || strings.Contains(lower, "inject") || strings.Contains(lower, "di ") {
+		ctx.HasHilt = true
+	}
+	if strings.Contains(lower, "room") || strings.Contains(lower, "database") || strings.Contains(lower, "dao") || strings.Contains(lower, "entity") {
+		ctx.HasRoom = true
+	}
+	if strings.Contains(lower, "navigation") || strings.Contains(lower, "nav") || strings.Contains(lower, "route") || strings.Contains(lower, "deeplink") {
+		ctx.HasNav = true
+	}
+
+	return ctx
+}
+
+// Registry manages skill activation for the agent.
+type Registry struct {
+	skills  []Skill
+	builtin []Skill
+	db      *sql.DB
+}
+
+// NewRegistry creates a new skill registry.
+func NewRegistry(db *sql.DB) *Registry {
+	return &Registry{
+		db:      db,
+		builtin: builtinSkills(),
+	}
+}
+
+// LoadFromFile loads skills from a YAML file.
+func (r *Registry) LoadFromFile(path string) error {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, fmt.Errorf("error creating temp directory: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Clone the repository
-	fmt.Println("Cloning Android skills repository...")
-	cmd := exec.Command("git", "clone", "--depth", "1", "https://github.com/android/skills.git", tmpDir)
-	if err := cmd.Run(); err != nil {
-		return 0, fmt.Errorf("error cloning repository: %w", err)
-	}
-
-	// Create project skills directory if it doesn't exist
-	if err := os.MkdirAll(l.projectDir, 0755); err != nil {
-		return 0, fmt.Errorf("error creating project skills directory: %w", err)
-	}
-
-	count := 0
-
-	// Walk through the cloned repository
-	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
+		if os.IsNotExist(err) {
 			return nil
 		}
+		return fmt.Errorf("reading skills file: %w", err)
+	}
+	var cfg SkillConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parsing skills file: %w", err)
+	}
+	r.skills = append(r.skills, cfg.Skills...)
+	return nil
+}
 
-		if strings.HasSuffix(path, "SKILL.md") {
-			// Get the relative path from tmpDir
-			relPath, err := filepath.Rel(tmpDir, path)
-			if err != nil {
-				return nil
+// LoadFromDir loads all .yml/.yaml files from a directory.
+func (r *Registry) LoadFromDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading skills dir: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext == ".yml" || ext == ".yaml" {
+			if err := r.LoadFromFile(filepath.Join(dir, e.Name())); err != nil {
+				return fmt.Errorf("loading %s: %w", e.Name(), err)
 			}
+		}
+	}
+	return nil
+}
 
-			// Create a skill name from the path (e.g., jetpack-compose/adaptive -> jetpack-compose-adaptive)
-			skillName := strings.ReplaceAll(filepath.Dir(relPath), "/", "-")
-			skillName = strings.TrimPrefix(skillName, "-")
-			skillName = strings.TrimSuffix(skillName, "-")
-			
-			// Skip the root SKILL.md if it exists
-			if skillName == "" {
-				skillName = "android-skills"
+// Activate returns the skills that should be active given the context.
+func (r *Registry) Activate(ctx ActivationContext) []Skill {
+	var result []Skill
+	usedTokens := 0
+
+	for _, s := range r.allSkills() {
+		if s.Always {
+			result = append(result, s)
+			usedTokens += s.MaxTokens
+		}
+	}
+
+	for _, s := range r.allSkills() {
+		if s.Always {
+			continue
+		}
+		if r.matchesTriggers(s, ctx) {
+			if ctx.MaxTokens > 0 && usedTokens+s.MaxTokens > ctx.MaxTokens {
+				continue
 			}
+			result = append(result, s)
+			usedTokens += s.MaxTokens
+		}
+	}
 
-			// Create skill directory
-			destDir := filepath.Join(l.projectDir, skillName)
-			if err := os.MkdirAll(destDir, 0755); err != nil {
-				return fmt.Errorf("error creating skill directory: %w", err)
-			}
+	return result
+}
 
-			// Copy SKILL.md
-			destPath := filepath.Join(destDir, "SKILL.md")
-			if err := copyFile(path, destPath); err != nil {
-				return fmt.Errorf("error copying skill file: %w", err)
-			}
+// RenderActiveSkills formats active skills for injection into the system prompt.
+func RenderActiveSkills(skills []Skill) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Active Skills\n\n")
+	for _, s := range skills {
+		sb.WriteString(fmt.Sprintf("### %s\n%s\n\n", s.Name, s.Content))
+	}
+	return sb.String()
+}
 
-			// Copy references directory if it exists
-			refsDir := filepath.Join(filepath.Dir(path), "references")
-			if _, err := os.Stat(refsDir); err == nil {
-				destRefsDir := filepath.Join(destDir, "references")
-				if err := copyDir(refsDir, destRefsDir); err != nil {
-					fmt.Printf("Warning: Error copying references directory: %v\n", err)
+func (r *Registry) allSkills() []Skill {
+	all := make([]Skill, 0, len(r.builtin)+len(r.skills))
+	all = append(all, r.builtin...)
+	all = append(all, r.skills...)
+	return all
+}
+
+func (r *Registry) matchesTriggers(s Skill, ctx ActivationContext) bool {
+	t := s.Triggers
+
+	if len(t.Files) > 0 && len(ctx.FilePaths) > 0 {
+		for _, pattern := range t.Files {
+			for _, path := range ctx.FilePaths {
+				if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+					return true
 				}
 			}
-
-			count++
-			fmt.Printf("Imported skill: %s\n", skillName)
 		}
-
-		return nil
-	})
-
-	if err != nil {
-		return count, fmt.Errorf("error importing skills: %w", err)
 	}
 
-	// Reload skills
-	l.skills = make(map[string]*Skill)
-	if err := l.LoadAll(); err != nil {
-		return count, fmt.Errorf("error reloading skills: %w", err)
-	}
-
-	return count, nil
-}
-
-func (l *SkillLoader) ImportAndroidSkillByName(skillName string) error {
-	// Clone the Android skills repository to a temp directory
-	tmpDir, err := os.MkdirTemp("", "android-skills-*")
-	if err != nil {
-		return fmt.Errorf("error creating temp directory: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Clone the repository
-	fmt.Println("Cloning Android skills repository...")
-	cmd := exec.Command("git", "clone", "--depth", "1", "https://github.com/android/skills.git", tmpDir)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("error cloning repository: %w", err)
-	}
-
-	// Find the skill in the repository
-	skillPath := ""
-	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		if strings.HasSuffix(path, "SKILL.md") {
-			// Check if this is the skill we're looking for
-			relPath, _ := filepath.Rel(tmpDir, path)
-			dirName := strings.ReplaceAll(filepath.Dir(relPath), "/", "-")
-			dirName = strings.TrimPrefix(dirName, "-")
-			dirName = strings.TrimSuffix(dirName, "-")
-			
-			if dirName == skillName || strings.Contains(dirName, skillName) {
-				skillPath = path
-				return filepath.SkipDir
+	if len(t.Content) > 0 {
+		lower := strings.ToLower(ctx.Task)
+		for _, pattern := range t.Content {
+			if strings.Contains(lower, strings.ToLower(pattern)) {
+				return true
 			}
 		}
-
-		return nil
-	})
-
-	if err != nil {
-		return fmt.Errorf("error finding skill: %w", err)
 	}
 
-	if skillPath == "" {
-		return fmt.Errorf("skill '%s' not found in Android skills repository", skillName)
-	}
-
-	// Create project skills directory if it doesn't exist
-	if err := os.MkdirAll(l.projectDir, 0755); err != nil {
-		return fmt.Errorf("error creating project skills directory: %w", err)
-	}
-
-	// Create skill directory
-	destDir := filepath.Join(l.projectDir, skillName)
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("error creating skill directory: %w", err)
-	}
-
-	// Copy SKILL.md
-	destPath := filepath.Join(destDir, "SKILL.md")
-	if err := copyFile(skillPath, destPath); err != nil {
-		return fmt.Errorf("error copying skill file: %w", err)
-	}
-
-	// Copy references directory if it exists
-	refsDir := filepath.Join(filepath.Dir(skillPath), "references")
-	if _, err := os.Stat(refsDir); err == nil {
-		destRefsDir := filepath.Join(destDir, "references")
-		if err := copyDir(refsDir, destRefsDir); err != nil {
-			fmt.Printf("Warning: Error copying references directory: %v\n", err)
+	if len(t.Tools) > 0 && len(ctx.ToolsUsed) > 0 {
+		toolSet := make(map[string]bool)
+		for _, tu := range ctx.ToolsUsed {
+			toolSet[tu] = true
+		}
+		for _, tool := range t.Tools {
+			if toolSet[tool] {
+				return true
+			}
 		}
 	}
 
-	fmt.Printf("Imported skill: %s\n", skillName)
+	if len(t.Types) > 0 && len(ctx.FileTypes) > 0 {
+		typeSet := make(map[string]bool)
+		for _, ft := range ctx.FileTypes {
+			typeSet[ft] = true
+		}
+		for _, typ := range t.Types {
+			if typeSet[typ] {
+				return true
+			}
+		}
+	}
 
-	// Reload skills
-	l.skills = make(map[string]*Skill)
-	return l.LoadAll()
+	if ctx.HasCompose && hasTriggerWord(s, "compose") {
+		return true
+	}
+	if ctx.HasHilt && hasTriggerWord(s, "hilt") {
+		return true
+	}
+	if ctx.HasRoom && hasTriggerWord(s, "room") {
+		return true
+	}
+	if ctx.HasNav && hasTriggerWord(s, "navigation") {
+		return true
+	}
+
+	return false
+}
+
+func hasTriggerWord(s Skill, word string) bool {
+	lower := strings.ToLower(s.Name + " " + s.Description)
+	return strings.Contains(lower, word)
+}
+
+// SearchBrainForSkillContent searches the brain for content relevant to a skill topic.
+func SearchBrainForSkillContent(db *sql.DB, topic string) string {
+	if db == nil {
+		return ""
+	}
+	b := brain.NewBrain(db)
+	entries, err := b.Search(topic)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, e := range entries {
+		if e.Status == "promoted" {
+			lines = append(lines, fmt.Sprintf("- %s: %s", e.Title, truncateStr(e.Content, 150)))
+		}
+		if len(lines) >= 3 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+// parseSkillContent parses a SKILL.md file with YAML frontmatter.
+func parseSkillContent(content string) (*SkillInfo, error) {
+	if !strings.HasPrefix(content, "---") {
+		return nil, fmt.Errorf("skill content must start with YAML frontmatter (---)")
+	}
+
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("invalid frontmatter format")
+	}
+
+	frontmatter := strings.TrimSpace(parts[1])
+	body := strings.TrimSpace(parts[2])
+
+	var meta struct {
+		Name        string   `yaml:"name"`
+		Description string   `yaml:"description"`
+		Triggers    []string `yaml:"triggers"`
+	}
+
+	if err := yaml.Unmarshal([]byte(frontmatter), &meta); err != nil {
+		return nil, fmt.Errorf("parsing frontmatter: %w", err)
+	}
+
+	return &SkillInfo{
+		Name:        meta.Name,
+		Description: meta.Description,
+		Content:     body,
+		Triggers:    meta.Triggers,
+	}, nil
+}
+
+// ExportSkillsJSON exports all loaded skills as JSON.
+func (l *SkillLoader) ExportSkillsJSON() (string, error) {
+	if len(l.skills) == 0 {
+		if err := l.LoadAll(); err != nil {
+			return "", err
+		}
+	}
+	data, err := yaml.Marshal(l.skills)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// builtinSkills returns the built-in skills for Android development.
+func builtinSkills() []Skill {
+	return []Skill{
+		{
+			Name:        "android_architecture",
+			Description: "Core Android architecture patterns (MVVM, MVI, Clean Architecture)",
+			Content: `## Android Architecture Patterns
+
+### MVVM (Model-View-ViewModel)
+- ViewModel holds UI state (UiState data class)
+- UI observes StateFlow<UiState>
+- Events go up via function calls, not LiveData
+- No Android framework references in ViewModel (use cases for that)
+
+### MVI (Model-View-Intent)
+- Single source of truth: UiState
+- User actions -> UiEvent -> Reducer -> UiState
+- Side effects via UiEffect (Channel/SharedFlow, one-shot)
+- Strict unidirectional data flow
+
+### Clean Architecture Layers
+- UI Layer: Activity/Fragment/Composable + ViewModel
+- Domain Layer: UseCases (optional, for complex logic)
+- Data Layer: Repository + DataSource (local/remote)
+
+### Dependency Injection (Hilt)
+- @HiltViewModel for ViewModels
+- @Inject constructor for dependencies
+- @Module + @InstallIn for bindings
+- @AndroidEntryPoint for Activity/Fragment`,
+			Always:    true,
+			Priority:  100,
+			MaxTokens: 200,
+		},
+		{
+			Name:        "compose_ui",
+			Description: "Jetpack Compose patterns, State, Effects, Material3",
+			Content: `## Jetpack Compose Patterns
+
+### State Management
+- remember { mutableStateOf() } for local state
+- rememberSaveable for state surviving config changes
+- viewModel() / hiltViewModel() for shared state
+- State hoisting: state goes down, events go up
+
+### Effects
+- LaunchedEffect(key) for side effects tied to composition
+- DisposableEffect for cleanup
+- rememberCoroutineScope for event-driven effects
+- produceState for async data loading
+
+### Recomposition
+- Only re-read state that actually changed
+- Use derivedStateOf for computed values
+- Use Stable/Immutable annotations for stability
+- LazyColumn/LazyGrid for lists
+
+### Material3
+- MaterialTheme for colors, typography, shapes
+- Use theme tokens, not hardcoded colors
+- Scaffold + TopAppBar + BottomBar pattern`,
+			Always:    false,
+			Priority:  90,
+			MaxTokens: 150,
+			Triggers: Triggers{
+				Content: []string{"compose", "screen", "ui", "composable", "material"},
+				Types:   []string{"composable", "activity"},
+			},
+		},
+		{
+			Name:        "hilt_di",
+			Description: "Hilt/Dagger dependency injection patterns",
+			Content: `## Hilt Dependency Injection
+
+### ViewModels
+@HiltViewModel
+class MyViewModel @Inject constructor(
+    private val useCase: MyUseCase
+) : ViewModel()
+
+### Use Cases
+class MyUseCase @Inject constructor(
+    private val repo: MyRepository
+)
+
+### Repositories
+class MyRepositoryImpl @Inject constructor(
+    private val dao: MyDao,
+    private val api: MyApi
+) : MyRepository
+
+### Modules
+@Module
+@InstallIn(SingletonComponent::class)
+object MyModule {
+    @Provides
+    @Singleton
+    fun provideApi(): MyApi = Retrofit.Builder().build()
+}
+
+### Key Rules
+- Never inject Context into ViewModel
+- Use @ApplicationContext for Application-scoped deps
+- Interface -> @Binds, concrete -> @Provides
+- @Singleton = app scope, @ViewModelScoped = VM scope`,
+			Always:    false,
+			Priority:  85,
+			MaxTokens: 150,
+			Triggers: Triggers{
+				Content: []string{"hilt", "dagger", "inject", "di ", "module"},
+				Types:   []string{"di_module", "viewmodel", "usecase", "repository"},
+			},
+		},
+		{
+			Name:        "data_persistence",
+			Description: "Room database, DAO, Entity, TypeConverter patterns",
+			Content: `## Room Database Patterns
+
+### Entity
+@Entity(tableName = "items")
+data class ItemEntity(
+    @PrimaryKey val id: Long,
+    val name: String,
+    val createdAt: Long
+)
+
+### DAO
+@Dao
+interface ItemDao {
+    @Query("SELECT * FROM items")
+    fun getAll(): Flow<List<ItemEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: ItemEntity)
+
+    @Delete
+    suspend fun delete(item: ItemEntity)
+}
+
+### Database
+@Database(entities = [ItemEntity::class], version = 1)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun itemDao(): ItemDao
+}
+
+### Repository Pattern
+class ItemRepositoryImpl @Inject constructor(
+    private val dao: ItemDao
+) : ItemRepository {
+    override fun getAll(): Flow<List<Item>> = dao.getAll().map { entities ->
+        entities.map { it.toDomain() }
+    }
+}`,
+			Always:    false,
+			Priority:  70,
+			MaxTokens: 120,
+			Triggers: Triggers{
+				Content: []string{"room", "database", "dao", "entity", "persistence"},
+				Types:   []string{"dao", "entity", "repository"},
+			},
+		},
+		{
+			Name:        "navigation",
+			Description: "Navigation Compose patterns, routes, NavHost",
+			Content: `## Navigation Compose
+
+### Route Definition
+@Serializable
+sealed class Screen(val route: String) {
+    @Serializable data object Home : Screen("home")
+    @Serializable data object Settings : Screen("settings")
+    @Serializable data class Detail(val id: Long) : Screen("detail/{id}")
+}
+
+### NavHost Setup
+NavHost(navController, startDestination = Screen.Home) {
+    composable<Screen.Home> { HomeScreen(onNavigate = { navController.navigate(Screen.Settings) }) }
+    composable<Screen.Settings> { SettingsScreen() }
+    composable<Screen.Detail> { backStackEntry ->
+        val detail = backStackEntry.toRoute<Screen.Detail>()
+        DetailScreen(id = detail.id)
+    }
+}
+
+### Navigation Arguments
+- Use @Serializable data classes for type-safe args
+- navController.navigate(Screen.Detail(id = 123))
+- Deep links: navDeepLink<Screen.Detail>(basePath = "app://detail/{id}")`,
+			Always:    false,
+			Priority:  65,
+			MaxTokens: 80,
+			Triggers: Triggers{
+				Content: []string{"navigation", "nav", "route", "deeplink", "navhost"},
+				Types:   []string{"nav_route", "activity", "composable"},
+			},
+		},
+		{
+			Name:        "testing",
+			Description: "JUnit, Espresso, Compose testing patterns",
+			Content:    "## Testing Patterns\n\n### Unit Tests (JUnit + ViewModel)\n@Test\nfun whenActionTriggersStateChange() = runTest {\n    val useCase = mockk<MyUseCase>()\n    val viewModel = MyViewModel(useCase)\n    viewModel.onAction(SomeAction)\n    assertEquals(ExpectedState, viewModel.uiState.value)\n}\n\n### Compose UI Tests\n@Test\nfun myScreenTest() {\n    composeTestRule.setContent { MyScreen(viewModel = testViewModel) }\n    composeTestRule.onNodeWithText(\"Title\").assertIsDisplayed()\n    composeTestRule.onNodeWithTag(\"submit\").performClick()\n}\n\n### Key Patterns\n- Use Turbine for Flow testing\n- Use MockK for mocking\n- Use runTest for coroutine tests\n- Use composeTestRule for UI tests",
+			Always:    false,
+			Priority:  50,
+			MaxTokens: 100,
+			Triggers: Triggers{
+				Content: []string{"test", "junit", "espresso", "mockk"},
+				Types:   []string{"test"},
+			},
+		},
+	}
 }

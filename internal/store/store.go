@@ -186,6 +186,10 @@ func (s *Store) migrate() error {
 		}
 	}
 
+	// Migraciones incrementales: agregar columnas que no existan.
+	// SQLite no soporta ADD COLUMN IF NOT EXISTS, así que capturamos el error.
+	_, _ = s.db.Exec(`ALTER TABLE conversations ADD COLUMN summary TEXT`)
+
 	return nil
 }
 

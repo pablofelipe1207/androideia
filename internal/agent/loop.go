@@ -13,6 +13,8 @@ import (
 	"github.com/pablofelipe1207/androideia/internal/llm"
 	"github.com/pablofelipe1207/androideia/internal/memory"
 	"github.com/pablofelipe1207/androideia/internal/project"
+	"github.com/pablofelipe1207/androideia/internal/semantic"
+	"github.com/pablofelipe1207/androideia/internal/skills"
 )
 
 type Agent struct {
@@ -26,6 +28,8 @@ type Agent struct {
 	conversationID int64
 	taskStats      TaskStats
 	maxTurns       int
+	skillRegistry  *skills.Registry
+	skillContext   skills.ActivationContext
 }
 
 type TaskStats struct {
@@ -46,12 +50,14 @@ func NewAgentWithMaxTurns(llmProvider llm.Provider, db *sql.DB, cfg *config.Conf
 	if maxTurns <= 0 {
 		maxTurns = 50
 	}
+	skillReg := skills.NewRegistry(db)
 	return &Agent{
-		llm:   llmProvider,
-		tools: NewToolRegistryWithConfig(db, cfg),
-		db:    db,
-		config: cfg,
-		maxTurns: maxTurns,
+		llm:           llmProvider,
+		tools:         NewToolRegistryWithConfig(db, cfg),
+		db:            db,
+		config:        cfg,
+		maxTurns:      maxTurns,
+		skillRegistry: skillReg,
 		messages: []llm.Message{
 			{Role: "system", Content: SystemPrompt},
 		},
@@ -117,7 +123,8 @@ func (a *Agent) StartSession(task string) (int64, error) {
 }
 
 // ResumeSession carga una conversación existente y reconstruye el slice
-// de mensajes en memoria. Devuelve la tarea original.
+// de mensajes en memoria. Para sesiones completadas antiguas (sin resume
+// posible), carga el resumen en lugar de todos los mensajes.
 func (a *Agent) ResumeSession(id int64) (string, error) {
 	if a.memory == nil {
 		return "", fmt.Errorf("memory not configured")
@@ -127,6 +134,15 @@ func (a *Agent) ResumeSession(id int64) (string, error) {
 		return "", err
 	}
 	if conv.Status == memory.StatusCompleted {
+		// Si tiene resumen, usarlo en lugar de cargar todos los mensajes
+		if conv.Summary != "" {
+			a.conversationID = conv.ID
+			a.messages = []llm.Message{
+				{Role: "system", Content: SystemPrompt},
+				{Role: "user", Content: fmt.Sprintf("Previous session summary:\n%s\n\nTask:", conv.Summary)},
+			}
+			return conv.Task, nil
+		}
 		return "", fmt.Errorf("conversation %d is already marked as completed", id)
 	}
 	a.conversationID = conv.ID
@@ -139,8 +155,7 @@ func (a *Agent) ResumeSession(id int64) (string, error) {
 		return "", err
 	}
 	// Si la sesión fue creada antes de que existiera la inyección del
-	// bloque "## Project context", lo añadimos ahora para que el LLM
-	// siga las convenciones de package y de libs.versions.toml.
+	// bloque "## Project context", lo añadimos ahora.
 	if a.projectMD != nil && len(a.messages) > 0 && a.messages[0].Role == "system" &&
 		!strings.Contains(a.messages[0].Content, "## Project context") {
 		block := BuildProjectContextBlock(a.projectMD)
@@ -167,6 +182,9 @@ func (a *Agent) persistMessage(role, content string, toolCalls []llm.ToolCall, t
 func (a *Agent) Run(task string) error {
 	fmt.Println("Starting agent loop...")
 	fmt.Printf("Task: %s\n\n", task)
+
+	// Build dynamic system prompt based on task context
+	a.buildDynamicPrompt(task)
 
 	// Si no hay sesión activa y la memoria está habilitada, arrancar una.
 	if a.conversationID == 0 && a.memory != nil {
@@ -418,6 +436,8 @@ func (a *Agent) markCompleted() {
 	if !a.taskStats.HasErrors && len(a.taskStats.FilesCreated) > 0 {
 		_ = a.memory.SetStatus(a.conversationID, memory.StatusCompleted)
 		a.storeTaskKnowledgeIfReady()
+		a.generateSessionSummary()
+		a.syncSemanticConventions()
 		return
 	}
 	_ = a.memory.SetStatus(a.conversationID, memory.StatusCompleted)
@@ -933,5 +953,156 @@ func orderMarshal(v interface{}) string {
 	default:
 		b, _ := json.Marshal(x)
 		return string(b)
+	}
+}
+
+// buildDynamicPrompt constructs the system prompt dynamically based on the task.
+func (a *Agent) buildDynamicPrompt(task string) {
+	ctx := skills.BuildContextFromTask(task)
+	a.skillContext = ctx
+
+	// Load user skills from .androideai/skills/ if it exists
+	if a.skillRegistry != nil {
+		_ = a.skillRegistry.LoadFromDir(".androideai/skills")
+	}
+
+	// Activate relevant skills
+	activeSkills := a.skillRegistry.Activate(ctx)
+
+	// Build dynamic prompt
+	dynamicPrompt := BuildDynamicSystemPrompt(ctx, activeSkills)
+
+	// Update system message
+	if len(a.messages) > 0 && a.messages[0].Role == "system" {
+		a.messages[0].Content = dynamicPrompt
+	} else {
+		a.messages = append([]llm.Message{{Role: "system", Content: dynamicPrompt}}, a.messages...)
+	}
+}
+
+// generateSessionSummary creates a summary of the completed session.
+func (a *Agent) generateSessionSummary() {
+	if a.memory == nil || a.conversationID == 0 || a.db == nil {
+		return
+	}
+
+	// Load messages for summary generation
+	msgs, err := a.memory.LoadMessagesForSummary(a.conversationID)
+	if err != nil || len(msgs) == 0 {
+		return
+	}
+
+	// Build a condensed conversation for the LLM
+	var conversationText strings.Builder
+	for _, m := range msgs {
+		if m.Role == "user" {
+			conversationText.WriteString(fmt.Sprintf("User: %s\n", truncateContent(m.Content, 300)))
+		} else if m.Role == "assistant" && m.Content != "" {
+			conversationText.WriteString(fmt.Sprintf("Agent: %s\n", truncateContent(m.Content, 300)))
+		}
+	}
+
+	// Ask LLM to generate a summary
+	summaryPrompt := fmt.Sprintf(`Summarize this development session in 3-5 concise sentences. Focus on:
+- What was the main task
+- What files were created/modified
+- Key decisions or patterns used
+- Any important outcomes
+
+Conversation:
+%s
+
+Summary:`, conversationText.String())
+
+	extractMessages := []llm.Message{
+		{Role: "user", Content: summaryPrompt},
+	}
+
+	resp, err := a.llm.Chat(extractMessages, nil)
+	if err != nil {
+		fmt.Printf("[Memory] Error generating session summary: %v\n", err)
+		return
+	}
+	if len(resp.Choices) == 0 {
+		return
+	}
+
+	summary := strings.TrimSpace(resp.Choices[0].Message.Content)
+	if summary != "" {
+		_ = a.memory.SetSummary(a.conversationID, summary)
+		fmt.Printf("[Memory] Session summary saved\n")
+	}
+}
+
+// syncSemanticConventions syncs semantic conventions to the brain after session completion.
+func (a *Agent) syncSemanticConventions() {
+	if a.db == nil || len(a.taskStats.FilesCreated) == 0 {
+		return
+	}
+
+	// Determine which file types were touched
+	touchedTypes := make(map[string]bool)
+	for _, path := range a.taskStats.FilesCreated {
+		if strings.HasSuffix(path, ".kt") || strings.HasSuffix(path, ".kts") {
+			// Heuristic: derive type from path
+			lower := strings.ToLower(path)
+			switch {
+			case strings.Contains(lower, "viewmodel") || strings.Contains(lower, "vm"):
+				touchedTypes["viewmodel"] = true
+			case strings.Contains(lower, "usecase"):
+				touchedTypes["usecase"] = true
+			case strings.Contains(lower, "repository"):
+				touchedTypes["repository"] = true
+			case strings.Contains(lower, "dao"):
+				touchedTypes["dao"] = true
+			case strings.Contains(lower, "composable") || strings.Contains(lower, "screen"):
+				touchedTypes["composable"] = true
+			case strings.Contains(lower, "activity"):
+				touchedTypes["activity"] = true
+			case strings.Contains(lower, "module") || strings.Contains(lower, "di"):
+				touchedTypes["di_module"] = true
+			}
+		}
+	}
+
+	if len(touchedTypes) == 0 {
+		return
+	}
+
+	// Run semantic aggregation for the touched types
+	sem := semantic.NewSemantic(a.db, "", "")
+	aggregates, err := sem.AggregateConventions()
+	if err != nil {
+		return
+	}
+
+	b := brain.NewBrain(a.db)
+	synced := 0
+	for _, agg := range aggregates {
+		if !touchedTypes[agg.Role] {
+			continue
+		}
+		if agg.Conventions == "" {
+			continue
+		}
+
+		// Create new entry (SaveIfNotExists will skip if title already exists)
+		entryType, title, content, tags, fileRefs := agg.BrainEntry()
+		entry := &brain.KnowledgeEntry{
+			Type:     entryType,
+			Title:    title,
+			Content:  content,
+			Tags:     tags,
+			FileRefs: fileRefs,
+			Status:   "promoted",
+		}
+		_, created, err := b.SaveIfNotExists(entry)
+		if err == nil && created {
+			synced++
+		}
+	}
+
+	if synced > 0 {
+		fmt.Printf("[Brain] Synced %d convention(s) from semantic index\n", synced)
 	}
 }

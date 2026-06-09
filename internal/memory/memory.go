@@ -26,6 +26,7 @@ type Conversation struct {
 	ApprovalMode string `json:"approval_mode"`
 	Provider     string `json:"provider"`
 	Model        string `json:"model"`
+	Summary      string `json:"summary,omitempty"`
 	CreatedAt    int64  `json:"created_at"`
 	UpdatedAt    int64  `json:"updated_at"`
 }
@@ -87,12 +88,12 @@ func (m *Memory) CreateConversation(task, title, approvalMode, provider, model s
 func (m *Memory) GetConversation(id int64) (*Conversation, error) {
 	row := m.db.QueryRow(
 		`SELECT id, title, task, status, COALESCE(approval_mode, ''), COALESCE(provider, ''),
-		        COALESCE(model, ''), created_at, updated_at
+		        COALESCE(model, ''), COALESCE(summary, ''), created_at, updated_at
 		 FROM conversations WHERE id = ?`, id,
 	)
 
 	c := &Conversation{}
-	err := row.Scan(&c.ID, &c.Title, &c.Task, &c.Status, &c.ApprovalMode, &c.Provider, &c.Model, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Title, &c.Task, &c.Status, &c.ApprovalMode, &c.Provider, &c.Model, &c.Summary, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("conversation %d not found", id)
 	}
@@ -109,7 +110,7 @@ func (m *Memory) ListConversations(limit int) ([]*Conversation, error) {
 	}
 	rows, err := m.db.Query(
 		`SELECT id, title, task, status, COALESCE(approval_mode, ''), COALESCE(provider, ''),
-		        COALESCE(model, ''), created_at, updated_at
+		        COALESCE(model, ''), COALESCE(summary, ''), created_at, updated_at
 		 FROM conversations
 		 ORDER BY updated_at DESC
 		 LIMIT ?`, limit,
@@ -122,7 +123,7 @@ func (m *Memory) ListConversations(limit int) ([]*Conversation, error) {
 	var out []*Conversation
 	for rows.Next() {
 		c := &Conversation{}
-		if err := rows.Scan(&c.ID, &c.Title, &c.Task, &c.Status, &c.ApprovalMode, &c.Provider, &c.Model, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Title, &c.Task, &c.Status, &c.ApprovalMode, &c.Provider, &c.Model, &c.Summary, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("error scanning conversation: %w", err)
 		}
 		out = append(out, c)
@@ -146,6 +147,77 @@ func (m *Memory) SetStatus(id int64, status string) error {
 func (m *Memory) Touch(id int64) error {
 	_, err := m.db.Exec(`UPDATE conversations SET updated_at = ? WHERE id = ?`, time.Now().Unix(), id)
 	return err
+}
+
+// SetSummary guarda un resumen de la conversación (para sesiones completadas).
+func (m *Memory) SetSummary(id int64, summary string) error {
+	_, err := m.db.Exec(
+		`UPDATE conversations SET summary = ?, updated_at = ? WHERE id = ?`,
+		summary, time.Now().Unix(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("error setting summary: %w", err)
+	}
+	return nil
+}
+
+// GetCompletedSessionSummaries devuelve los resúmenes de las sesiones completadas.
+func (m *Memory) GetCompletedSessionSummaries(limit int) ([]*Conversation, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := m.db.Query(
+		`SELECT id, title, task, COALESCE(summary, ''), created_at
+		 FROM conversations
+		 WHERE status = 'completed' AND summary IS NOT NULL AND summary != ''
+		 ORDER BY updated_at DESC
+		 LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error getting summaries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Conversation
+	for rows.Next() {
+		c := &Conversation{}
+		if err := rows.Scan(&c.ID, &c.Title, &c.Task, &c.Summary, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("error scanning summary: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// LoadMessagesForSummary carga solo los mensajes assistant y user (para generar resumen).
+func (m *Memory) LoadMessagesForSummary(conversationID int64) ([]StoredMessage, error) {
+	rows, err := m.db.Query(
+		`SELECT id, conversation_id, role, COALESCE(content, ''), COALESCE(tool_calls, ''),
+		        COALESCE(tool_call_id, ''), COALESCE(tool_name, ''), created_at
+		 FROM messages WHERE conversation_id = ? AND role IN ('assistant', 'user')
+		 ORDER BY id ASC`, conversationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error loading messages for summary: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []StoredMessage
+	for rows.Next() {
+		msg := StoredMessage{}
+		var toolCallsJSON string
+		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.Role, &msg.Content, &toolCallsJSON,
+			&msg.ToolCallID, &msg.ToolName, &msg.CreatedAt); err != nil {
+			return nil, fmt.Errorf("error scanning message: %w", err)
+		}
+		if toolCallsJSON != "" {
+			if err := json.Unmarshal([]byte(toolCallsJSON), &msg.ToolCalls); err != nil {
+				return nil, fmt.Errorf("error unmarshaling tool calls: %w", err)
+			}
+		}
+		out = append(out, msg)
+	}
+	return out, nil
 }
 
 // DeleteConversation elimina una conversación y todos sus mensajes.
