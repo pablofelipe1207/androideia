@@ -50,6 +50,16 @@ Uso con Claude Desktop (claude_desktop_config.json):
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dbPath, _ := cmd.Flags().GetString("db")
 
+		// Si el path contiene "test.db" o no fue seteado explícitamente,
+		// calcular la ruta relativa al directorio de trabajo actual
+		if dbPath == "" || filepath.Base(dbPath) == "core.db" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("error obteniendo directorio de trabajo: %w", err)
+			}
+			dbPath = filepath.Join(cwd, ".androideai", "core.db")
+		}
+
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 			return fmt.Errorf("base de datos no encontrada en %s. Ejecutá 'androideai init' primero", dbPath)
 		}
@@ -157,10 +167,7 @@ var mcpListCmd = &cobra.Command{
 }
 
 func init() {
-	projectDir, _ := os.Getwd()
-	defaultDB := filepath.Join(projectDir, ".androideai", "core.db")
-
-	mcpServeCmd.Flags().String("db", defaultDB, "Ruta a la base de datos SQLite")
+	mcpServeCmd.Flags().String("db", "", "Ruta a la base de datos SQLite (default: ./.androideai/core.db)")
 
 	mcpCmd.AddCommand(mcpServeCmd)
 	mcpCmd.AddCommand(mcpConnectCmd)
