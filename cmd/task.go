@@ -16,12 +16,19 @@ import (
 )
 
 var (
-	taskPriority  string
-	taskType      string
-	taskStatus    string
-	taskModel     string
-	taskTimeout   int
+	taskPriority    string
+	taskType        string
+	taskStatus      string
+	taskModel       string
+	taskTimeout     int
 	taskAutoApprove bool
+	// Flags para task run
+	taskRunFile       string
+	taskRunGit        bool
+	taskRunBranchPref string
+	taskRunValidate   bool
+	taskRunStopError  bool
+	taskRunMaxTurns   int
 )
 
 var taskCmd = &cobra.Command{
@@ -445,6 +452,131 @@ var taskClearCmd = &cobra.Command{
 	},
 }
 
+var taskRunCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Procesa tareas desde un archivo markdown",
+	Long: `Procesa un archivo .md con tareas en formato checkbox (- [ ] tarea).
+Las tareas se ejecutan una por una con el agente de IA, sin confirmación.
+Opcionalmente puede crear branches y PRs para cada tarea.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if taskRunFile == "" {
+			return fmt.Errorf("debes especificar el archivo de tareas con --file")
+		}
+
+		// Cargar configuración
+		mc, _, err := config.LoadModelsConfig()
+		if err != nil {
+			return fmt.Errorf("error loading models config: %w", err)
+		}
+
+		if taskModel != "" {
+			mc.Agent.Model = taskModel
+		}
+
+		// Resolver modelo
+		if mc.Agent.Provider == "ollama" {
+			baseURL := mc.Agent.BaseURL
+			if baseURL == "" {
+				baseURL = mc.Semantic.BaseURL
+			}
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			resolved, _, err := llm.ResolveOllamaModel(baseURL, mc.Agent.Model)
+			if err != nil {
+				return fmt.Errorf("error resolving model: %w", err)
+			}
+			mc.Agent.Model = resolved
+		}
+
+		// Crear LLM provider
+		var llmProvider llm.Provider
+		timeoutDur := time.Duration(taskTimeout) * time.Second
+		if timeoutDur <= 0 {
+			timeoutDur = 120 * time.Second
+		}
+
+		switch mc.Agent.Provider {
+		case "ollama":
+			baseURL := mc.Agent.BaseURL
+			if baseURL == "" {
+				baseURL = mc.Semantic.BaseURL
+			}
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			llmProvider = llm.NewOllamaProviderWithTimeout(baseURL, mc.Agent.Model, timeoutDur)
+		case "opencode_zen":
+			llmProvider = llm.NewOpenCodeZenProviderWithOptions(
+				mc.Agent.Model,
+				mc.Agent.APIKey(),
+				mc.Agent.BaseURL,
+				timeoutDur,
+			)
+		case "anthropic":
+			apiKey := mc.Agent.APIKey()
+			llmProvider = llm.NewAnthropicProvider(apiKey, mc.Agent.Model)
+		case "openai":
+			apiKey := mc.Agent.APIKey()
+			llmProvider = llm.NewOpenAIProvider(apiKey, mc.Agent.Model, mc.Agent.BaseURL)
+		default:
+			return fmt.Errorf("unknown provider: %s", mc.Agent.Provider)
+		}
+
+		// Abrir DB
+		dbPath := filepath.Join(".androideai", "core.db")
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return fmt.Errorf("database not found, run 'androideai init' first")
+		}
+
+		s, err := store.NewStore(dbPath)
+		if err != nil {
+			return fmt.Errorf("error opening database: %w", err)
+		}
+		defer s.Close()
+
+		// Cargar configuración del agente
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("error loading config: %w", err)
+		}
+		if taskAutoApprove {
+			cfg.Approval = "auto"
+		}
+
+		// Crear cola
+		queue := task.NewTaskQueue(s.DB(), llmProvider, cfg)
+
+		// Configurar opciones
+		opts := task.RunOptions{
+			UseGit:        taskRunGit,
+			BranchPrefix:  taskRunBranchPref,
+			ValidateBuild: taskRunValidate,
+			StopOnError:   taskRunStopError,
+			Model:         mc.Agent.Model,
+			Timeout:       taskTimeout,
+			MaxTurns:      taskRunMaxTurns,
+		}
+
+		// Ejecutar
+		results, err := queue.ProcessFromMarkdown(taskRunFile, opts)
+		if err != nil {
+			return err
+		}
+
+		// Retornar error si hubo fallas
+		if results != nil {
+			for _, r := range results {
+				if !r.Success {
+					return fmt.Errorf("task failed: %s - %s", r.Title, r.Error)
+				}
+			}
+		}
+
+		return nil
+	},
+}
+
 func openTaskManager() (*task.TaskManager, func(), error) {
 	dbPath := filepath.Join(".androideai", "core.db")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
@@ -487,6 +619,17 @@ func init() {
 	// Flags para clear
 	taskClearCmd.Flags().StringP("type", "t", "completed", "Tipo a limpiar: completed, cancelled, all")
 
+	// Flags para run
+	taskRunCmd.Flags().StringVarP(&taskRunFile, "file", "f", "", "Archivo .md con tareas (requerido)")
+	taskRunCmd.Flags().BoolVar(&taskRunGit, "git", false, "Habilitar workflow git (branch + PR por tarea)")
+	taskRunCmd.Flags().StringVar(&taskRunBranchPref, "branch-prefix", "task/", "Prefijo para branches de git")
+	taskRunCmd.Flags().BoolVar(&taskRunValidate, "validate-build", true, "Validar compilación después de cada tarea")
+	taskRunCmd.Flags().BoolVar(&taskRunStopError, "stop-on-error", false, "Detener si hay error de compilación")
+	taskRunCmd.Flags().StringVarP(&taskModel, "model", "m", "", "Override del modelo LLM")
+	taskRunCmd.Flags().IntVar(&taskTimeout, "timeout", 120, "Timeout en segundos para el LLM")
+	taskRunCmd.Flags().IntVar(&taskRunMaxTurns, "max-turns", 25, "Máximo de turnos del agente por tarea")
+	taskRunCmd.Flags().BoolVarP(&taskAutoApprove, "yes", "y", false, "Auto-aprobar operaciones (siempre true para task run)")
+
 	taskCmd.AddCommand(taskAddCmd)
 	taskCmd.AddCommand(taskListCmd)
 	taskCmd.AddCommand(taskShowCmd)
@@ -497,6 +640,7 @@ func init() {
 	taskCmd.AddCommand(taskProcessCmd)
 	taskCmd.AddCommand(taskStatsCmd)
 	taskCmd.AddCommand(taskClearCmd)
+	taskCmd.AddCommand(taskRunCmd)
 
 	rootCmd.AddCommand(taskCmd)
 }
