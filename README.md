@@ -247,6 +247,10 @@ androideai task clear --type all        # Clear completed + cancelled
 androideai task process                 # Process next task in queue
 androideai task process --all           # Process all queued tasks
 androideai task process --model qwen2.5-coder:7b  # Override model
+
+# Process tasks from markdown file
+androideai task run --file tasks.md           # Process tasks from file
+androideai task run --file tasks.md --git     # With git workflow (branch + PR)
 ```
 
 ### Task Priorities
@@ -288,6 +292,117 @@ When you run `task process`, the system:
 3. Uses the configured LLM to execute the task
 4. Creates a conversation in memory for tracking
 5. Stores the result and marks as `completed` or `failed`
+
+### Process Tasks from Markdown
+
+You can process tasks directly from a markdown file with checkboxes. The agent executes each task sequentially, marks them as completed in the file, and optionally creates git branches and PRs.
+
+#### Markdown File Format
+
+```markdown
+# My Development Tasks
+
+## Phase 1 - Backend
+- [ ] Implement User data model
+- [ ] Create User repository
+- [ ] Implement GetUser use case
+- [ ] Add unit tests for UserRepository
+
+## Phase 2 - Frontend  
+- [ ] Create user profile screen
+- [ ] Implement profile ViewModel
+- [ ] Add navigation from Home to Profile
+```
+
+#### Basic Usage
+
+```bash
+# Process all pending tasks from file
+androideai task run --file tasks.md
+
+# With specific model
+androideai task run --file tasks.md --model qwen3-coder-64k-32k:latest
+
+# Stop on first compilation error
+androideai task run --file tasks.md --stop-on-error
+```
+
+#### Git Workflow
+
+Enable automatic git workflow with the `--git` flag. For each task, the system will:
+
+1. Create a new branch (`task/<task-name>`)
+2. Execute the task with the agent
+3. Validate compilation (`go build` + `go vet`)
+4. Commit changes with message `feat: <task-name>`
+5. Push branch and create a Pull Request
+6. Return to original branch for the next task
+
+```bash
+# Enable git workflow
+androideai task run --file tasks.md --git
+
+# Custom branch prefix
+androideai task run --file tasks.md --git --branch-prefix feature/
+```
+
+#### Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--file`, `-f` | Markdown file with tasks (required) | - |
+| `--git` | Enable git workflow (branch + PR per task) | `false` |
+| `--branch-prefix` | Prefix for git branches | `task/` |
+| `--validate-build` | Run `go build` after each task | `true` |
+| `--stop-on-error` | Stop if compilation fails | `false` |
+| `--model`, `-m` | Override LLM model | Config default |
+| `--timeout` | Timeout per LLM call in seconds | `120` |
+| `--max-turns` | Max agent turns per task | `25` |
+
+#### How It Works
+
+1. **Parse**: Reads the markdown file and extracts all `- [ ]` tasks
+2. **Filter**: Skips already completed tasks (`- [x]`)
+3. **Execute**: For each pending task:
+   - Creates a git branch (if `--git` enabled)
+   - Runs the agent with auto-approval
+   - Validates compilation (if `--validate-build` enabled)
+   - Marks task as `[x]` in the file
+   - Creates PR and commits (if `--git` enabled)
+4. **Report**: Shows summary of completed/failed tasks
+
+#### Example Output
+
+```
+============================================================
+  PROCESSING TASK FILE
+  File: tasks.md
+  Total: 9 | Pending: 9 | Completed: 0
+============================================================
+
+------------------------------------------------------------
+  TASK 1/9: Implement User data model
+------------------------------------------------------------
+  [Git] Branch created: task/implement-user-data-model
+  [Build] Verifying compilation...
+  [Build] OK
+  [Git] Commit created
+  [Git] Push realizado
+  [Git] PR creado: https://github.com/.../pull/123
+  [File] Task marked as completed
+
+============================================================
+  SUMMARY
+============================================================
+  ✓ Implement User data model
+    PR: https://github.com/.../pull/123
+  ✓ Create User repository
+    PR: https://github.com/.../pull/124
+  ...
+
+  Total: 9 | Successful: 7 | Failed: 2
+============================================================
+```
 
 ### Confirmations
 
