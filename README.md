@@ -122,6 +122,7 @@ androideai agent --resume 1 "now add unit tests for the ViewModel"
 - **Modular Skills**: Skills activate automatically based on triggers (Compose, Hilt, Room, Navigation)
 - **Session Summaries**: Old sessions are compressed to summaries, saving tokens on resume
 - **Semantic-Brain Sync**: Conventions from semantic index are automatically synced to brain after each session
+- **MCP Server**: Expose all tools to OpenCode, Claude Code, and other MCP-compatible agents
 
 ## Version
 
@@ -779,6 +780,132 @@ androideai semantic deps --path app/src/.../LoginViewModel.kt
 
 # Get suggestions for a feature
 androideai semantic suggest --feature login
+```
+
+## MCP Server (Model Context Protocol)
+
+androideai-core includes a built-in MCP server that exposes its tools to
+other AI agents like **OpenCode** or **Claude Code**. This means you can
+use androideai's semantic search, knowledge base, templates, and task
+management from within your favorite coding agent.
+
+### Available Tools (19)
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Cerebro** | `brain_search` | Search project knowledge by text |
+| | `brain_save` | Save a knowledge entry |
+| | `brain_list` | List all knowledge entries |
+| | `brain_review` | List temporary entries pending review |
+| | `brain_promote` | Promote a temp entry to permanent |
+| **Semántica** | `semantic_search` | Search code by meaning (embeddings) |
+| | `semantic_locate` | Find files by type/tag (LLM classification) |
+| | `semantic_graph` | Feature graph - files grouped by feature |
+| | `semantic_deps` | File dependencies and imports |
+| | `semantic_suggest` | Suggest missing architecture layers |
+| | `semantic_index` | Index project (classify + embeddings) |
+| **Plantillas** | `scaffold_template` | Get canonical Kotlin template for a role |
+| | `scaffold_list` | List available template roles |
+| | `scaffold_validate` | Validate a .kt file against role rules |
+| **Tareas** | `task_list` | List tasks from the queue |
+| | `task_create` | Create a new task |
+| | `task_get` | Get task details by ID |
+| | `task_stats` | Queue statistics |
+| **Proyecto** | `project_info` | Project version and DB statistics |
+
+### Quick Start
+
+```bash
+# View available tools and configuration
+androideai mcp list
+
+# Start the MCP server (stdio mode)
+androideai mcp serve
+```
+
+### Connect with OpenCode
+
+Add this to your `opencode.json` (in the project root or `~/.config/opencode/`):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "androideia": {
+        "command": "androideai",
+        "args": ["mcp", "serve"],
+        "cwd": "/path/to/your/android/project"
+      }
+    }
+  }
+}
+```
+
+If `androideai` is in your PATH, you can simplify:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "androideia": {
+        "command": "androideai",
+        "args": ["mcp", "serve"]
+      }
+    }
+  }
+}
+```
+
+### Connect with Claude Desktop
+
+Add this to your `claude_desktop_config.json` (usually at `~/Library/Application Support/Claude/` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "androideia": {
+      "command": "androideai",
+      "args": ["mcp", "serve"],
+      "cwd": "/path/to/your/android/project"
+    }
+  }
+}
+```
+
+### Connect with Claude Code
+
+```bash
+# Add the MCP server to Claude Code
+claude mcp add androideia androideai mcp serve
+```
+
+### Using the Tools
+
+Once connected, the agent can use androideia's tools directly. Examples:
+
+```
+# Agent searches the knowledge base
+brain_search(query: "MVVM pattern convention")
+
+# Agent gets a ViewModel template
+scaffold_template(role: "viewmodel", name: "Login", feature: "login")
+
+# Agent finds files by meaning
+semantic_search(query: "user authentication")
+
+# Agent checks what layers exist for a feature
+semantic_suggest(feature: "login")
+
+# Agent creates a task
+task_create(title: "Add unit tests", type: "test", priority: "high")
+```
+
+### Custom Database Path
+
+If your `.androideai/core.db` is not in the default location:
+
+```bash
+androideai mcp serve --db /path/to/.androideai/core.db
 ```
 
 ## Token Optimization

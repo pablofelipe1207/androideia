@@ -1,54 +1,81 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/pablofelipe1207/androideia/internal/mcpclient"
+	"github.com/pablofelipe1207/androideia/internal/mcpserver"
 	"github.com/spf13/cobra"
 )
 
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Comandos MCP (Model Context Protocol)",
-	Long:  `Gestiona conexiones MCP y exponer herramientas del producto.`,
+	Long:  `Gestiona conexiones MCP y exponer herramientas del proyecto a otros agentes (OpenCode, Claude Code, etc.).`,
 }
 
 var mcpServeCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Inicia el servidor MCP",
-	Long:  `Inicia un servidor MCP que expone las herramientas de androideai-core a otros agentes.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		port, _ := cmd.Flags().GetInt("port")
-		
-		fmt.Printf("Starting MCP server on port %d...\n", port)
-		fmt.Println("Note: MCP server implementation is a stub in this phase.")
-		fmt.Println("Full MCP server will be implemented in future versions.")
-		
-		// Create context with signal handling
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	Long: `Inicia un servidor MCP que expone las herramientas de androideia a otros agentes.
+El servidor se comunica por stdio (stdin/stdout) siguiendo el protocolo MCP.
 
-		// Handle signals
+Uso con OpenCode (opencode.json):
+{
+  "mcp": {
+    "servers": {
+      "androideia": {
+        "command": "androideai",
+        "args": ["mcp", "serve"],
+        "cwd": "/ruta/a/tu/proyecto"
+      }
+    }
+  }
+}
+
+Uso con Claude Desktop (claude_desktop_config.json):
+{
+  "mcpServers": {
+    "androideia": {
+      "command": "androideai",
+      "args": ["mcp", "serve"],
+      "cwd": "/ruta/a/tu/proyecto"
+    }
+  }
+}`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dbPath, _ := cmd.Flags().GetString("db")
+
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return fmt.Errorf("base de datos no encontrada en %s. Ejecutá 'androideai init' primero", dbPath)
+		}
+
+		srv, err := mcpserver.New(dbPath)
+		if err != nil {
+			return fmt.Errorf("error iniciando servidor MCP: %w", err)
+		}
+		defer srv.Close()
+
+		// Handle signals for graceful shutdown
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		
+
 		go func() {
 			<-sigCh
-			fmt.Println("\nShutting down MCP server...")
-			cancel()
+			fmt.Fprintln(os.Stderr, "\nShutting down MCP server...")
+			srv.Close()
+			os.Exit(0)
 		}()
 
-		// Server would run here
-		fmt.Println("MCP server ready. Press Ctrl+C to stop.")
-		
-		// Wait for context cancellation
-		<-ctx.Done()
-		
-		fmt.Println("MCP server stopped.")
+		fmt.Fprintln(os.Stderr, "androideia MCP server ready")
+		if err := srv.Run(cmd.Context()); err != nil {
+			return fmt.Errorf("MCP server error: %w", err)
+		}
+
 		return nil
 	},
 }
@@ -60,34 +87,29 @@ var mcpConnectCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		serverURL := args[0]
-		
-		fmt.Printf("Connecting to MCP server: %s\n", serverURL)
-		
-		// Create client
+
+		fmt.Printf("Conectando a servidor MCP: %s\n", serverURL)
+
 		client := mcpclient.NewMCPClient(serverURL)
-		
-		// Connect
-		ctx, cancel := context.WithTimeout(context.Background(), 30)
-		defer cancel()
-		
+
+		ctx := cmd.Context()
 		if err := client.Connect(ctx); err != nil {
-			return fmt.Errorf("error connecting to MCP server: %w", err)
+			return fmt.Errorf("error conectando al servidor MCP: %w", err)
 		}
 		defer client.Disconnect(ctx)
-		
-		fmt.Println("Connected successfully!")
-		
-		// List tools
+
+		fmt.Println("Conexión exitosa!")
+
 		tools, err := client.ListTools(ctx)
 		if err != nil {
-			return fmt.Errorf("error listing tools: %w", err)
+			return fmt.Errorf("error listando tools: %w", err)
 		}
-		
-		fmt.Printf("\nAvailable tools (%d):\n", len(tools))
+
+		fmt.Printf("\nTools disponibles (%d):\n", len(tools))
 		for _, tool := range tools {
 			fmt.Printf("  - %s: %s\n", tool.Name, tool.Description)
 		}
-		
+
 		return nil
 	},
 }
@@ -97,22 +119,49 @@ var mcpListCmd = &cobra.Command{
 	Short: "Lista servidores MCP configurados",
 	Long:  `Muestra la lista de servidores MCP configurados en la configuración del proyecto.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Configured MCP servers:")
-		fmt.Println("(No servers configured yet)")
-		fmt.Println("\nTo configure MCP servers, add them to your config.yml:")
-		fmt.Println("mcp:")
-		fmt.Println("  servers:")
-		fmt.Println("    - name: my-server")
-		fmt.Println("      url: http://localhost:3000")
+		fmt.Println("Configuración MCP para conectar agentes:")
+		fmt.Println()
+		fmt.Println("1. Copiá una de las siguientes configuraciones en tu agente:")
+		fmt.Println()
+		fmt.Println("   Para OpenCode (opencode.json):")
+		fmt.Println("   {")
+		fmt.Println(`     "mcp": {`)
+		fmt.Println(`       "servers": {`)
+		fmt.Println(`         "androideia": {`)
+		fmt.Println(`           "command": "androideai",`)
+		fmt.Println(`           "args": ["mcp", "serve"]`)
+		fmt.Println(`         }`)
+		fmt.Println(`       }`)
+		fmt.Println(`     }`)
+		fmt.Println("   }")
+		fmt.Println()
+		fmt.Println("   Para Claude Desktop (claude_desktop_config.json):")
+		fmt.Println("   {")
+		fmt.Println(`     "mcpServers": {`)
+		fmt.Println(`       "androideia": {`)
+		fmt.Println(`         "command": "androideai",`)
+		fmt.Println(`         "args": ["mcp", "serve"]`)
+		fmt.Println(`       }`)
+		fmt.Println(`     }`)
+		fmt.Println("   }")
+		fmt.Println()
+		fmt.Println("2. Tools disponibles:")
+		fmt.Println("   Semántica: semantic_search, semantic_locate, semantic_graph, semantic_deps, semantic_suggest, semantic_index")
+		fmt.Println("   Cerebro:   brain_search, brain_save, brain_list, brain_review, brain_promote")
+		fmt.Println("   Plantillas: scaffold_template, scaffold_list, scaffold_validate")
+		fmt.Println("   Tareas:    task_list, task_create, task_get, task_stats")
+		fmt.Println("   Proyecto:  project_info")
+
 		return nil
 	},
 }
 
 func init() {
-	// Serve command flags
-	mcpServeCmd.Flags().IntP("port", "p", 3000, "Port to listen on")
-	
-	// Add commands
+	projectDir, _ := os.Getwd()
+	defaultDB := filepath.Join(projectDir, ".androideai", "core.db")
+
+	mcpServeCmd.Flags().String("db", defaultDB, "Ruta a la base de datos SQLite")
+
 	mcpCmd.AddCommand(mcpServeCmd)
 	mcpCmd.AddCommand(mcpConnectCmd)
 	mcpCmd.AddCommand(mcpListCmd)
