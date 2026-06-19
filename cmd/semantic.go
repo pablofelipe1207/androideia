@@ -70,8 +70,10 @@ símbolos ya indexados.`,
 		}
 
 		// Create semantic instance with provider from models.yml
-		provider := semantic.SemanticProvider(mc.Semantic.Provider)
-		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+		sem, err := createSemanticInstance(s, mc)
+		if err != nil {
+			return err
+		}
 
 		// 1) Clasificación por archivo (LLM). Es el paso nuevo: para
 		//    cada .kt/.kts del índice, el LLM devuelve {type, tags,
@@ -79,7 +81,12 @@ símbolos ya indexados.`,
 		if !sem.IsAvailable() {
 			fmt.Printf("⚠️  Semantic provider is not available. Skipping LLM classification, only embeddings will be refreshed.\n\n")
 		} else {
-			fmt.Printf("→ Clasificando archivos con %s (%s) ...\n", mc.Semantic.ChatModel, mc.Semantic.Provider)
+			// Show which providers are being used
+			if mc.Semantic.Provider == "google_gemini" {
+				fmt.Printf("→ Clasificando archivos con opencode_zen (chat) ...\n")
+			} else {
+				fmt.Printf("→ Clasificando archivos con %s (%s) ...\n", mc.Semantic.ChatModel, mc.Semantic.Provider)
+			}
 			classified, failed, err := sem.ClassifyAllFiles()
 			if err != nil {
 				return fmt.Errorf("error classifying files: %w", err)
@@ -154,8 +161,10 @@ var semanticSearchCmd = &cobra.Command{
 		}
 
 		// Create semantic instance with provider from models.yml
-		provider := semantic.SemanticProvider(mc.Semantic.Provider)
-		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+		sem, err := createSemanticInstance(s, mc)
+		if err != nil {
+			return err
+		}
 
 		// Search
 		results, err := sem.Search(query, limit)
@@ -227,8 +236,10 @@ arquitectura, un resumen y un snippet de las convenciones detectadas.`,
 			}
 			mc.Semantic.ChatModel = resolved
 		}
-		provider := semantic.SemanticProvider(mc.Semantic.Provider)
-		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+		sem, err := createSemanticInstance(s, mc)
+		if err != nil {
+			return err
+		}
 
 		if showAll {
 			limit = 200
@@ -302,8 +313,10 @@ var semanticStatusCmd = &cobra.Command{
 			mc.Semantic.ChatModel = resolved
 		}
 
-		provider := semantic.SemanticProvider(mc.Semantic.Provider)
-		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+		sem, err := createSemanticInstance(s, mc)
+		if err != nil {
+			return err
+		}
 
 		fmt.Println("Semantic Search Status")
 		fmt.Println("=====================")
@@ -366,6 +379,20 @@ func emptyAs(s, fallback string) string {
 	return s
 }
 
+// createSemanticInstance creates a semantic instance based on the provider config.
+// For google_gemini, it uses the API key from the environment.
+func createSemanticInstance(s *store.Store, mc *config.ModelsConfig) (*semantic.Semantic, error) {
+	provider := semantic.SemanticProvider(mc.Semantic.Provider)
+	if provider == semantic.ProviderGoogleGemini {
+		apiKey := mc.Semantic.APIKey()
+		if apiKey == "" {
+			return nil, fmt.Errorf("Google Gemini API key not configured. Set %s environment variable", mc.Semantic.APIKeyEnv)
+		}
+		return semantic.NewSemanticWithAPIKey(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, mc.Semantic.EmbeddingModel, apiKey, provider), nil
+	}
+	return semantic.NewSemanticWithEmbeddingModel(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, mc.Semantic.EmbeddingModel, provider), nil
+}
+
 var semanticGraphCmd = &cobra.Command{
 	Use:   "graph",
 	Short: "Show the feature graph (files grouped by feature with relationships)",
@@ -389,8 +416,10 @@ with types, dependencies, and missing layers.`,
 		if err != nil {
 			return fmt.Errorf("error loading models config: %w", err)
 		}
-		provider := semantic.SemanticProvider(mc.Semantic.Provider)
-		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+		sem, err := createSemanticInstance(s, mc)
+		if err != nil {
+			return err
+		}
 
 		graph, err := sem.BuildFeatureGraph()
 		if err != nil {
@@ -448,8 +477,10 @@ if this file changes.`,
 		if err != nil {
 			return fmt.Errorf("error loading models config: %w", err)
 		}
-		provider := semantic.SemanticProvider(mc.Semantic.Provider)
-		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+		sem, err := createSemanticInstance(s, mc)
+		if err != nil {
+			return err
+		}
 
 		graph, err := sem.BuildFeatureGraph()
 		if err != nil {
@@ -530,8 +561,10 @@ refactoring an existing one.`,
 		if err != nil {
 			return fmt.Errorf("error loading models config: %w", err)
 		}
-		provider := semantic.SemanticProvider(mc.Semantic.Provider)
-		sem := semantic.NewSemanticWithProvider(s.DB(), mc.Semantic.BaseURL, mc.Semantic.ChatModel, provider)
+		sem, err := createSemanticInstance(s, mc)
+		if err != nil {
+			return err
+		}
 
 		graph, err := sem.BuildFeatureGraph()
 		if err != nil {

@@ -58,9 +58,10 @@ var indexBuildCmd = &cobra.Command{
 		s.DB().Exec("DELETE FROM symbols_fts")
 
 		// Extract symbols and store
-		// Use tree-sitter parser for better accuracy
-		extractor := index.NewTreeSitterExtractor()
-		fmt.Println("Using tree-sitter parser for precise symbol extraction")
+		// Try tree-sitter parser first, fallback to regex-based KotlinExtractor
+		treeSitterExtractor := index.NewTreeSitterExtractor()
+		kotlinExtractor := index.NewKotlinExtractor()
+		fmt.Println("Using tree-sitter parser with regex fallback for symbol extraction")
 
 		for _, file := range files {
 			content, err := os.ReadFile(file.Path)
@@ -68,10 +69,10 @@ var indexBuildCmd = &cobra.Command{
 				return fmt.Errorf("error reading file %s: %w", file.Path, err)
 			}
 
-			// Extract metadata
-			file.Package = extractor.InferPackage(string(content))
-			file.Module = extractor.InferModule(file.Path)
-			file.Layer = extractor.InferLayer(file.Path, string(content))
+			// Extract metadata (use kotlinExtractor for package/module/layer since tree-sitter stub doesn't implement them)
+			file.Package = kotlinExtractor.InferPackage(string(content))
+			file.Module = kotlinExtractor.InferModule(file.Path)
+			file.Layer = kotlinExtractor.InferLayer(file.Path, string(content))
 
 			// Insert file
 			_, err = s.DB().Exec(
@@ -89,11 +90,15 @@ var indexBuildCmd = &cobra.Command{
 				return fmt.Errorf("error getting file ID for %s: %w", file.Path, err)
 			}
 
-			// Extract symbols
-			symbols := extractor.ExtractSymbols(file.Path, string(content))
+			// Extract symbols - try tree-sitter first, fallback to regex
+			symbols := treeSitterExtractor.ExtractSymbols(file.Path, string(content))
+			if len(symbols) == 0 {
+				// Fallback to regex-based extractor
+				symbols = kotlinExtractor.ExtractSymbols(file.Path, string(content))
+			}
 
 			// Auto-infer feature name from symbols and tag them (heuristic fallback)
-			featureName := extractor.ExtractFeature(symbols)
+			featureName := kotlinExtractor.ExtractFeature(symbols)
 			if featureName != "" {
 				for i := range symbols {
 					symbols[i].Feature = featureName

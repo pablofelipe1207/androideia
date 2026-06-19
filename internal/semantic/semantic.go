@@ -17,9 +17,10 @@ import (
 type SemanticProvider string
 
 const (
-	ProviderOllama    SemanticProvider = "ollama"
-	ProviderOpenAI    SemanticProvider = "openai"
-	ProviderOpenCode  SemanticProvider = "opencode_zen"
+	ProviderOllama        SemanticProvider = "ollama"
+	ProviderOpenAI        SemanticProvider = "openai"
+	ProviderOpenCode      SemanticProvider = "opencode_zen"
+	ProviderGoogleGemini  SemanticProvider = "google_gemini"
 )
 
 type EmbeddingRequest struct {
@@ -32,11 +33,14 @@ type EmbeddingResponse struct {
 }
 
 type Semantic struct {
-	db        *sql.DB
-	ollamaURL string
-	model     string
-	provider  SemanticProvider
-	client    *http.Client
+	db             *sql.DB
+	ollamaURL      string
+	model          string
+	embeddingModel string
+	apiKey         string
+	provider       SemanticProvider
+	chatProvider   SemanticProvider
+	client         *http.Client
 }
 
 func NewSemantic(db *sql.DB, ollamaURL, model string) *Semantic {
@@ -55,8 +59,48 @@ func NewSemanticWithProvider(db *sql.DB, baseURL, model string, provider Semanti
 	}
 }
 
+func NewSemanticWithEmbeddingModel(db *sql.DB, baseURL, model, embeddingModel string, provider SemanticProvider) *Semantic {
+	return &Semantic{
+		db:             db,
+		ollamaURL:      baseURL,
+		model:          model,
+		embeddingModel: embeddingModel,
+		provider:       provider,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+func NewSemanticWithAPIKey(db *sql.DB, baseURL, model, embeddingModel, apiKey string, provider SemanticProvider) *Semantic {
+	// When using Google Gemini for embeddings, use OpenCode Zen for chat/classification
+	// because Gemini free tier has strict rate limits
+	chatProvider := provider
+	if provider == ProviderGoogleGemini {
+		chatProvider = ProviderOpenCode
+	}
+	return &Semantic{
+		db:             db,
+		ollamaURL:      baseURL,
+		model:          model,
+		embeddingModel: embeddingModel,
+		apiKey:         apiKey,
+		provider:       provider,
+		chatProvider:   chatProvider,
+		client: &http.Client{
+			Timeout: 60 * time.Second,
+		},
+	}
+}
+
 func (s *Semantic) IsAvailable() bool {
-	switch s.provider {
+	// Check chat provider availability (used for classification)
+	chatProv := s.chatProvider
+	if chatProv == "" {
+		chatProv = s.provider
+	}
+	
+	switch chatProv {
 	case ProviderOllama:
 		resp, err := s.client.Get(s.ollamaURL + "/api/tags")
 		if err != nil {
@@ -76,17 +120,38 @@ func (s *Semantic) IsAvailable() bool {
 		}
 		defer resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
+	case ProviderGoogleGemini:
+		// Verify Gemini API key is set
+		if s.apiKey == "" {
+			return false
+		}
+		// Test with a simple models list request
+		url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + s.apiKey
+		resp, err := s.client.Get(url)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
 	default:
 		return false
 	}
 }
 
 func (s *Semantic) GetEmbedding(text string) ([]float32, error) {
-	// Solo Ollama soporta embeddings localmente
-	if s.provider != ProviderOllama {
-		return nil, fmt.Errorf("embeddings not supported for provider %s, using FTS fallback", s.provider)
+	switch s.provider {
+	case ProviderOllama:
+		return s.getOllamaEmbedding(text)
+	case ProviderOpenCode, ProviderOpenAI:
+		return s.getOpenCodeZenEmbedding(text)
+	case ProviderGoogleGemini:
+		return s.getGoogleGeminiEmbedding(text)
+	default:
+		return nil, fmt.Errorf("embeddings not supported for provider %s", s.provider)
 	}
+}
 
+func (s *Semantic) getOllamaEmbedding(text string) ([]float32, error) {
 	request := EmbeddingRequest{
 		Model:  s.model,
 		Prompt: text,
@@ -118,6 +183,136 @@ func (s *Semantic) GetEmbedding(text string) ([]float32, error) {
 	}
 
 	return embeddingResp.Embedding, nil
+}
+
+func (s *Semantic) getOpenCodeZenEmbedding(text string) ([]float32, error) {
+	// Determine base URL
+	baseURL := s.ollamaURL
+	if baseURL == "" {
+		baseURL = "https://opencode.ai/zen/v1"
+	}
+
+	// Trim trailing slash
+	for len(baseURL) > 0 && baseURL[len(baseURL)-1] == '/' {
+		baseURL = baseURL[:len(baseURL)-1]
+	}
+
+	// Use embedding model if set, otherwise fall back to chat model
+	model := s.embeddingModel
+	if model == "" {
+		model = s.model
+	}
+
+	// OpenAI-compatible embedding request
+	request := map[string]interface{}{
+		"model": model,
+		"input": text,
+	}
+
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/embeddings", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("error building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error calling OpenCode Zen embeddings: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OpenCode Zen embeddings returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse OpenAI-compatible response
+	var embResp struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &embResp); err != nil {
+		return nil, fmt.Errorf("error unmarshaling embedding response: %w", err)
+	}
+	if len(embResp.Data) == 0 {
+		return nil, fmt.Errorf("OpenCode Zen embeddings returned no data")
+	}
+	return embResp.Data[0].Embedding, nil
+}
+
+func (s *Semantic) getGoogleGeminiEmbedding(text string) ([]float32, error) {
+	if s.apiKey == "" {
+		return nil, fmt.Errorf("Google Gemini API key not configured")
+	}
+
+	// Use embedding model if set, otherwise default to gemini-embedding-001
+	model := s.embeddingModel
+	if model == "" {
+		model = "gemini-embedding-001"
+	}
+
+	// Gemini API endpoint for embedContent
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:embedContent?key=%s", model, s.apiKey)
+
+	// Build request body (Gemini format)
+	request := map[string]interface{}{
+		"model": fmt.Sprintf("models/%s", model),
+		"content": map[string]interface{}{
+			"parts": []map[string]string{
+				{"text": text},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("error building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error calling Google Gemini embeddings: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Google Gemini embeddings returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse Gemini response
+	var embResp struct {
+		Embedding struct {
+			Values []float32 `json:"values"`
+		} `json:"embedding"`
+	}
+	if err := json.Unmarshal(body, &embResp); err != nil {
+		return nil, fmt.Errorf("error unmarshaling embedding response: %w", err)
+	}
+	if len(embResp.Embedding.Values) == 0 {
+		return nil, fmt.Errorf("Google Gemini embeddings returned no data")
+	}
+	return embResp.Embedding.Values, nil
 }
 
 func (s *Semantic) StoreEmbedding(symbolID int64, model string, vector []float32) error {
