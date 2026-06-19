@@ -160,10 +160,18 @@ func (s *Semantic) ClassifyFile(path, content string) (*classificationResult, er
 
 	prompt := fmt.Sprintf(classifyPromptTemplate, path, truncated)
 
+	// Use chatProvider for classification (may differ from provider for embeddings)
+	chatProv := s.chatProvider
+	if chatProv == "" {
+		chatProv = s.provider
+	}
+
 	// Seleccionar el provider apropiado
-	switch s.provider {
+	switch chatProv {
 	case ProviderOpenAI, ProviderOpenCode:
 		return s.classifyFileOpenAI(prompt)
+	case ProviderGoogleGemini:
+		return s.classifyFileGoogleGemini(prompt)
 	default:
 		return s.classifyFileOllama(prompt)
 	}
@@ -265,6 +273,88 @@ func (s *Semantic) classifyFileOpenAI(prompt string) (*classificationResult, err
 	}
 
 	parsed, err := parseClassificationContent(oaiResp.Choices[0].Message.Content)
+	if err != nil {
+		return nil, err
+	}
+	sanitizeClassification(parsed)
+	return parsed, nil
+}
+
+// classifyFileGoogleGemini usa la API de Google Gemini para clasificar.
+func (s *Semantic) classifyFileGoogleGemini(prompt string) (*classificationResult, error) {
+	if s.apiKey == "" {
+		return nil, fmt.Errorf("Google Gemini API key not configured")
+	}
+
+	// Use chat model if set, otherwise default to gemini-2.0-flash
+	model := s.model
+	if model == "" {
+		model = "gemini-2.0-flash"
+	}
+
+	// Gemini API endpoint for generateContent
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, s.apiKey)
+
+	// Build request body (Gemini format)
+	request := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]string{
+					{"text": "You are an expert Android code classifier. You always reply with strict JSON only, no markdown, no prose.\n\n" + prompt},
+				},
+			},
+		},
+		"generationConfig": map[string]interface{}{
+			"responseMimeType": "application/json",
+		},
+	}
+
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 90 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("error building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error calling Google Gemini API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Google Gemini API returned %d: %s", resp.StatusCode, string(raw))
+	}
+
+	// Parse Gemini response
+	var geminiResp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(raw, &geminiResp); err != nil {
+		return nil, fmt.Errorf("error unmarshaling response: %w (raw: %s)", err, string(raw))
+	}
+
+	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("no candidates in Gemini response")
+	}
+
+	content := geminiResp.Candidates[0].Content.Parts[0].Text
+	parsed, err := parseClassificationContent(content)
 	if err != nil {
 		return nil, err
 	}

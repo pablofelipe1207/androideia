@@ -65,12 +65,14 @@ type AgentModelConfig struct {
 // semantic index. `ChatModel` se usa para clasificación LLM de
 // archivos; `EmbeddingModel` se usa para generar embeddings de
 // símbolos. `BaseURL` apunta a la API del provider (típicamente
-// Ollama local).
+// Ollama local). `APIKeyEnv` es el nombre de la variable de entorno
+// que contiene la API key (para providers como Google Gemini).
 type SemanticModelConfig struct {
 	Provider       string `yaml:"provider"`
 	BaseURL        string `yaml:"base_url"`
 	ChatModel      string `yaml:"chat_model"`
 	EmbeddingModel string `yaml:"embedding_model"`
+	APIKeyEnv      string `yaml:"api_key_env,omitempty"`
 }
 
 // DefaultModelsConfig devuelve los defaults sensatos:
@@ -245,6 +247,16 @@ func (a *AgentModelConfig) APIKey() string {
 	return os.Getenv(a.APIKeyEnv)
 }
 
+// SemanticAPIKey devuelve la API key del semantic leyendo la variable
+// de entorno indicada en APIKeyEnv. Útil para providers como
+// Google Gemini que requieren API key.
+func (s *SemanticModelConfig) APIKey() string {
+	if s.APIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(s.APIKeyEnv)
+}
+
 // Validate revisa que los campos requeridos estén bien. Útil para
 // fallar rápido en vez de obtener errores crípticos del provider.
 func (c *ModelsConfig) Validate() error {
@@ -258,13 +270,17 @@ func (c *ModelsConfig) Validate() error {
 		return fmt.Errorf("agent.model no puede estar vacío")
 	}
 	validSemanticProviders := map[string]bool{
-		"ollama": true, "opencode_zen": true, "openai": true,
+		"ollama": true, "opencode_zen": true, "openai": true, "google_gemini": true,
 	}
 	if !validSemanticProviders[c.Semantic.Provider] {
-		return fmt.Errorf("semantic.provider debe ser 'ollama', 'opencode_zen' o 'openai'")
+		return fmt.Errorf("semantic.provider debe ser 'ollama', 'opencode_zen', 'openai' o 'google_gemini'")
 	}
 	if c.Semantic.ChatModel == "" {
 		return fmt.Errorf("semantic.chat_model no puede estar vacío")
+	}
+	// For google_gemini, api_key_env is required
+	if c.Semantic.Provider == "google_gemini" && c.Semantic.APIKeyEnv == "" {
+		return fmt.Errorf("semantic.api_key_env es requerido para google_gemini (ej: GEMINI_API_KEY)")
 	}
 	// embedding_model es opcional (solo necesario si se usan embeddings)
 	return nil
